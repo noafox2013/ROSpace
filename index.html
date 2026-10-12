@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Rust Mesa</title>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="game-canvas" aria-label="Rust Mesa 3D game"></canvas>
+
+      <section class="hud" aria-live="polite">
+        <div class="brand">
+          <span class="brand-mark"></span>
+          <span>Rust Mesa</span>
+        </div>
+        <div class="metrics">
+          <div>
+            <span>Score</span>
+            <strong id="score">0</strong>
+          </div>
+          <div>
+            <span>Shield</span>
+            <strong id="shield">100</strong>
+          </div>
+          <div>
+            <span>Best</span>
+            <strong id="best">0</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="overlay" id="overlay">
+        <h1 id="overlay-title">Rust Mesa</h1>
+        <p id="overlay-copy">Drift over rust-red terrain, dry grass, weathered rocks, low hills, and eroded desert washes.</p>
+        <button id="start-button" type="button">Start run</button>
+      </section>
+
+      <div class="controls" aria-hidden="true">
+        <button class="control" id="left-control" type="button">‹</button>
+        <button class="control" id="right-control" type="button">›</button>
+      </div>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
