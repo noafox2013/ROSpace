@@ -79,9 +79,9 @@ button {
 
 .metrics {
   display: grid;
-  grid-template-columns: repeat(3, minmax(72px, 1fr));
+  grid-template-columns: repeat(2, minmax(72px, 1fr));
   gap: 8px;
-  width: min(360px, 58vw);
+  width: min(244px, 42vw);
 }
 
 .metrics div {
