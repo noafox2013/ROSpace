@@ -18,7 +18,7 @@ const playerMovement = {
   sprintMultiplier: 1.72,
   jetpackLift: 9.5,
   jetpackGravity: 6.6,
-  jetpackMaxHeight: 4.84,
+  jetpackMaxHeight: 9.68,
   acceleration: 8.5,
   deceleration: 5.2,
 };
@@ -128,7 +128,7 @@ const camera = new THREE.PerspectiveCamera(62, 1, 0.1, 720);
 camera.position.set(0, 4.7, 12);
 camera.lookAt(0, 0.2, -24);
 
-const sunDirection = new THREE.Vector3(0.16, 0.135, -0.99).normalize();
+const sunDirection = new THREE.Vector3(0.14, 0.72, -0.68).normalize();
 const sunDistance = 122;
 const keyLightDistance = 76;
 
@@ -138,13 +138,16 @@ scene.add(hemi);
 const keyLight = new THREE.DirectionalLight(0xf4c086, 2.7);
 keyLight.position.copy(sunDirection).multiplyScalar(keyLightDistance);
 keyLight.castShadow = true;
-keyLight.shadow.mapSize.set(1024, 1024);
+keyLight.shadow.mapSize.set(2048, 2048);
+keyLight.shadow.bias = -0.00008;
+keyLight.shadow.normalBias = 0.035;
+keyLight.shadow.radius = 3.2;
 keyLight.shadow.camera.near = 0.5;
 keyLight.shadow.camera.far = 80;
-keyLight.shadow.camera.left = -38;
-keyLight.shadow.camera.right = 38;
-keyLight.shadow.camera.top = 38;
-keyLight.shadow.camera.bottom = -38;
+keyLight.shadow.camera.left = -32;
+keyLight.shadow.camera.right = 32;
+keyLight.shadow.camera.top = 32;
+keyLight.shadow.camera.bottom = -32;
 scene.add(keyLight);
 scene.add(keyLight.target);
 
@@ -401,6 +404,12 @@ const materials = {
     metalness: 0,
     vertexColors: true,
   }),
+  distantGround: new THREE.MeshStandardMaterial({
+    roughness: 0.99,
+    metalness: 0,
+    vertexColors: true,
+    fog: false,
+  }),
   hill: new THREE.MeshStandardMaterial({
     color: 0x8e5137,
     roughness: 0.98,
@@ -456,21 +465,28 @@ const materials = {
     flatShading: true,
   }),
   mountain: new THREE.MeshStandardMaterial({
-    color: 0x9a4e32,
+    color: 0x8f4a35,
     roughness: 0.99,
     metalness: 0,
     flatShading: true,
     fog: false,
   }),
   mountainDark: new THREE.MeshStandardMaterial({
-    color: 0x9a4e32,
+    color: 0x5f2d22,
     roughness: 1,
     metalness: 0,
     flatShading: true,
     fog: false,
   }),
   scree: new THREE.MeshStandardMaterial({
-    color: 0x9a4e32,
+    color: 0x9b573a,
+    roughness: 1,
+    metalness: 0,
+    flatShading: true,
+    fog: false,
+  }),
+  mesaStrata: new THREE.MeshStandardMaterial({
+    color: 0x6d3828,
     roughness: 1,
     metalness: 0,
     flatShading: true,
@@ -688,24 +704,26 @@ for (let i = 0; i < 0; i += 1) {
 const mountains = [];
 
 function createMountainGeometry(radius, height, seed) {
-  const rings = 8;
-  const segments = 18;
+  const rings = 12;
+  const segments = 28;
   const positions = [];
   const indices = [];
 
-  positions.push(0, height, 0);
+  positions.push(0, height * 0.74, 0);
   for (let ring = 1; ring <= rings; ring += 1) {
     const rNorm = ring / rings;
-    const shelf = Math.sin(rNorm * Math.PI * 4.5 + seed) * 0.08;
-    const falloff = Math.pow(Math.max(0, 1 - rNorm), 0.9);
+    const shelf = Math.sin(rNorm * Math.PI * 5.5 + seed) * 0.045;
+    const plateau = rNorm < 0.24 ? 0.74 : THREE.MathUtils.lerp(0.74, 0, Math.pow((rNorm - 0.24) / 0.76, 0.7));
+    const terrace = Math.floor(plateau * 6) / 6;
     for (let segment = 0; segment < segments; segment += 1) {
       const angle = (segment / segments) * Math.PI * 2;
       const ridgeNoise = smoothNoise(Math.cos(angle) * 3.5 + seed, Math.sin(angle) * 3.5 - seed);
-      const jagged = 1 + (ridgeNoise - 0.5) * 0.38 + shelf;
-      const r = radius * rNorm * jagged;
+      const jagged = 1 + (ridgeNoise - 0.5) * 0.18 + shelf;
+      const r = radius * rNorm * jagged * (1.15 + rNorm * 0.42);
       const x = Math.cos(angle) * r;
       const z = Math.sin(angle) * r;
-      const y = height * falloff + (smoothNoise(x * 0.12 + seed, z * 0.12 - seed) - 0.5) * height * 0.22;
+      const weathering = (smoothNoise(x * 0.08 + seed, z * 0.08 - seed) - 0.5) * height * 0.09;
+      const y = height * Math.max(0, terrace) + weathering * Math.max(0.15, 1 - rNorm);
       positions.push(x, Math.max(0, y), z);
     }
   }
@@ -735,19 +753,20 @@ function createMountainGeometry(radius, height, seed) {
 
 function createMountainCluster(seed) {
   const group = new THREE.Group();
-  const peakCount = THREE.MathUtils.randInt(3, 5);
+  const peakCount = THREE.MathUtils.randInt(4, 7);
   const colliders = [];
 
   for (let peak = 0; peak < peakCount; peak += 1) {
-    const radius = THREE.MathUtils.randFloat(11.5, 21.5) * (peak === 0 ? 1.35 : 0.86);
-    const height = THREE.MathUtils.randFloat(15.5, 28.5) * (peak === 0 ? 1.28 : 0.82);
-    const positionX = THREE.MathUtils.randFloatSpread(34);
-    const positionZ = THREE.MathUtils.randFloatSpread(30);
+    const radius = THREE.MathUtils.randFloat(14.5, 26.5) * (peak === 0 ? 1.28 : 0.92);
+    const height = THREE.MathUtils.randFloat(8.5, 18.5) * (peak === 0 ? 1.18 : 0.9);
+    const positionX = (peak - peakCount / 2) * THREE.MathUtils.randFloat(14, 24) + THREE.MathUtils.randFloatSpread(6);
+    const positionZ = THREE.MathUtils.randFloatSpread(22);
     const mountain = new THREE.Mesh(
       createMountainGeometry(radius, height, seed + peak * 7.31),
       peak % 2 === 0 ? materials.mountain : materials.mountainDark,
     );
     mountain.position.set(positionX, 0, positionZ);
+    mountain.scale.set(1.55 + peak * 0.05, 0.58 + peak * 0.02, 1.2);
     mountain.rotation.y = THREE.MathUtils.randFloat(0, Math.PI * 2);
     mountain.castShadow = true;
     mountain.receiveShadow = true;
@@ -759,15 +778,15 @@ function createMountainCluster(seed) {
     });
   }
 
-  for (let stone = 0; stone < 34; stone += 1) {
+  for (let stone = 0; stone < 24; stone += 1) {
     const angle = THREE.MathUtils.randFloat(0, Math.PI * 2);
-    const distance = THREE.MathUtils.randFloat(16, 46);
+    const distance = THREE.MathUtils.randFloat(20, 58);
     const scree = new THREE.Mesh(
       new THREE.DodecahedronGeometry(THREE.MathUtils.randFloat(0.28, 1.85), stone % 4 === 0 ? 0 : 1),
       materials.scree,
     );
     scree.position.set(Math.cos(angle) * distance, THREE.MathUtils.randFloat(0.04, 0.18), Math.sin(angle) * distance);
-    scree.scale.set(THREE.MathUtils.randFloat(1.8, 4.4), THREE.MathUtils.randFloat(0.35, 1.0), THREE.MathUtils.randFloat(1.3, 3.8));
+    scree.scale.set(THREE.MathUtils.randFloat(1.6, 4.8), THREE.MathUtils.randFloat(0.25, 0.75), THREE.MathUtils.randFloat(1.2, 3.9));
     scree.rotation.set(THREE.MathUtils.randFloat(0, Math.PI), THREE.MathUtils.randFloat(0, Math.PI), THREE.MathUtils.randFloat(0, Math.PI));
     scree.castShadow = true;
     scree.receiveShadow = true;
@@ -781,17 +800,252 @@ function createMountainCluster(seed) {
   return group;
 }
 
-for (let i = 0; i < 0; i += 1) {
-  const mountain = createMountainCluster(i * 11.41);
-  mountain.scale.setScalar(6.8);
-  const angle = THREE.MathUtils.randFloat(0, Math.PI * 2);
-  const distance = THREE.MathUtils.randFloat(460, 860);
-  const x = Math.sin(angle) * distance;
-  const z = playerMovement.startZ + Math.cos(angle) * distance;
-  mountain.position.set(x, terrainHeight(x, z) + 0.02, z);
-  mountain.rotation.y = THREE.MathUtils.randFloat(0, Math.PI * 2);
-  mountains.push(mountain);
-  world.add(mountain);
+function createMesaRidgeGeometry(width, depth, height, seed) {
+  const segments = 28;
+  const verticalSegments = 10;
+  const halfWidth = width / 2;
+  const halfDepth = depth / 2;
+  const positions = [];
+  const indices = [];
+  const topHeights = [];
+
+  for (let i = 0; i <= segments; i += 1) {
+    const t = i / segments;
+    const x = THREE.MathUtils.lerp(-halfWidth, halfWidth, t);
+    const plateau = Math.floor(smoothNoise(seed + i * 0.39, seed - 4) * 4) / 4;
+    const weathering = (smoothNoise(seed - 10 + i * 0.7, seed + i * 0.21) - 0.5) * height * 0.12;
+    const edgeDrop = Math.pow(Math.abs(t - 0.5) * 2, 1.7) * height * 0.34;
+    topHeights.push(THREE.MathUtils.clamp(height * (0.76 + plateau * 0.1) - edgeDrop + weathering, height * 0.18, height * 0.94));
+  }
+
+  function addCliffFace(z, zSign) {
+    const start = positions.length / 3;
+    for (let i = 0; i <= segments; i += 1) {
+      const t = i / segments;
+      const x = THREE.MathUtils.lerp(-halfWidth, halfWidth, t);
+      const topY = topHeights[i];
+      const cliffCut = (smoothNoise(seed + i * 0.31, seed + zSign * 8.7) - 0.5) * 1.8;
+      const edgeSign = t < 0.5 ? -1 : 1;
+      const edgeFan = Math.pow(Math.abs(t - 0.5) * 2, 1.55) * width * 0.08 * edgeSign;
+
+      for (let j = 0; j <= verticalSegments; j += 1) {
+        const v = j / verticalSegments;
+        const skirt = Math.pow(1 - v, 1.35);
+        const ledge = Math.sin(v * Math.PI * 9.5 + seed + i * 0.28) * 0.42 * (1 - v * 0.22);
+        const faceRelief = (smoothNoise(seed + i * 0.44, seed + j * 0.53 + zSign * 3.2) - 0.5) * 1.1;
+        const y = topY * Math.pow(v, 0.86);
+        positions.push(
+          x + cliffCut * skirt * 0.35 + edgeFan * skirt,
+          y,
+          z + (ledge + faceRelief + skirt * depth * 0.22) * zSign,
+        );
+      }
+    }
+
+    for (let i = 0; i < segments; i += 1) {
+      for (let j = 0; j < verticalSegments; j += 1) {
+        const a = start + i * (verticalSegments + 1) + j;
+        const b = a + 1;
+        const c = start + (i + 1) * (verticalSegments + 1) + j;
+        const d = c + 1;
+        if (zSign > 0) {
+          indices.push(a, c, b, b, c, d);
+        } else {
+          indices.push(a, b, c, b, d, c);
+        }
+      }
+    }
+
+    return start;
+  }
+
+  const frontStart = addCliffFace(halfDepth, 1);
+  const backStart = addCliffFace(-halfDepth, -1);
+
+  for (let i = 0; i < segments; i += 1) {
+    const frontA = frontStart + i * (verticalSegments + 1) + verticalSegments;
+    const frontB = frontStart + (i + 1) * (verticalSegments + 1) + verticalSegments;
+    const backA = backStart + i * (verticalSegments + 1) + verticalSegments;
+    const backB = backStart + (i + 1) * (verticalSegments + 1) + verticalSegments;
+    indices.push(frontA, frontB, backA, frontB, backB, backA);
+  }
+
+  const frontLeftBottom = frontStart;
+  const frontLeftTop = frontStart + verticalSegments;
+  const backLeftBottom = backStart;
+  const backLeftTop = backStart + verticalSegments;
+  const frontRightBottom = frontStart + segments * (verticalSegments + 1);
+  const frontRightTop = frontRightBottom + verticalSegments;
+  const backRightBottom = backStart + segments * (verticalSegments + 1);
+  const backRightTop = backRightBottom + verticalSegments;
+  indices.push(frontLeftBottom, frontLeftTop, backLeftBottom, frontLeftTop, backLeftTop, backLeftBottom);
+  indices.push(frontRightBottom, backRightBottom, frontRightTop, frontRightTop, backRightBottom, backRightTop);
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+function createMesaApronGeometry(width, depth, height, seed) {
+  const segments = 28;
+  const apronRows = 5;
+  const halfWidth = width / 2;
+  const positions = [];
+  const indices = [];
+
+  function addApron(zSign) {
+    const start = positions.length / 3;
+
+    for (let row = 0; row <= apronRows; row += 1) {
+      const u = row / apronRows;
+      const spread = 1 + u * 0.34;
+      const z = zSign * (depth / 2 + depth * (0.22 + u * 0.82));
+      for (let i = 0; i <= segments; i += 1) {
+        const t = i / segments;
+        const edgeFade = THREE.MathUtils.smoothstep(Math.min(t, 1 - t), 0.01, 0.12);
+        const x = THREE.MathUtils.lerp(-halfWidth, halfWidth, t) * spread;
+        const rumple = (smoothNoise(seed + i * 0.43, seed + row * 0.71 + zSign * 12) - 0.5) * height * 0.035;
+        const fanHeight = height * 0.105 * Math.pow(1 - u, 1.55) * edgeFade;
+        positions.push(x, fanHeight + rumple - u * 0.22, z);
+      }
+    }
+
+    for (let row = 0; row < apronRows; row += 1) {
+      for (let i = 0; i < segments; i += 1) {
+        const a = start + row * (segments + 1) + i;
+        const b = a + 1;
+        const c = start + (row + 1) * (segments + 1) + i;
+        const d = c + 1;
+        if (zSign > 0) {
+          indices.push(a, c, b, b, c, d);
+        } else {
+          indices.push(a, b, c, b, d, c);
+        }
+      }
+    }
+  }
+
+  addApron(1);
+  addApron(-1);
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+function createMesaRange(seed, width, depth, height, material) {
+  const group = new THREE.Group();
+  const main = new THREE.Mesh(createMesaRidgeGeometry(width, depth, height, seed), material);
+  main.castShadow = true;
+  main.receiveShadow = true;
+  group.add(main);
+
+  const apron = new THREE.Mesh(createMesaApronGeometry(width * 1.04, depth, height, seed + 31), materials.scree);
+  apron.position.y = -0.12;
+  apron.castShadow = false;
+  apron.receiveShadow = true;
+  group.add(apron);
+
+  const cap = new THREE.Mesh(
+    createMesaRidgeGeometry(width * 0.3, depth * 0.48, height * 0.24, seed + 17),
+    materials.mountainDark,
+  );
+  cap.position.set(width * (smoothNoise(seed + 3, seed + 9) - 0.5) * 0.42, height * 0.55, -depth * 0.16);
+  cap.scale.y = 0.62;
+  cap.castShadow = true;
+  cap.receiveShadow = true;
+  group.add(cap);
+
+  for (let band = 0; band < 9; band += 1) {
+    const bandWidth = width * THREE.MathUtils.randFloat(0.28, 0.86);
+    const strata = new THREE.Mesh(new THREE.BoxGeometry(bandWidth, 0.38, 0.26), materials.mesaStrata);
+    strata.position.set(
+      THREE.MathUtils.randFloatSpread(width * 0.18),
+      height * THREE.MathUtils.lerp(0.18, 0.73, band / 8),
+      depth / 2 + 0.34 + band * 0.015,
+    );
+    strata.rotation.z = THREE.MathUtils.randFloatSpread(0.018);
+    strata.castShadow = false;
+    strata.receiveShadow = true;
+    group.add(strata);
+  }
+
+  for (let wash = 0; wash < 12; wash += 1) {
+    const washHeight = height * THREE.MathUtils.randFloat(0.22, 0.62);
+    const ravine = new THREE.Mesh(new THREE.BoxGeometry(THREE.MathUtils.randFloat(0.45, 1.1), washHeight, 0.38), materials.mountainDark);
+    ravine.position.set(
+      THREE.MathUtils.randFloatSpread(width * 0.78),
+      washHeight * 0.46 + height * THREE.MathUtils.randFloat(0.05, 0.16),
+      depth / 2 + 0.54,
+    );
+    ravine.rotation.z = THREE.MathUtils.randFloatSpread(0.18);
+    ravine.castShadow = false;
+    ravine.receiveShadow = true;
+    group.add(ravine);
+  }
+
+  for (let toe = 0; toe < 6; toe += 1) {
+    const toeWidth = width * THREE.MathUtils.randFloat(0.06, 0.14);
+    const toeMesh = new THREE.Mesh(
+      createHillGeometry(toeWidth, height * THREE.MathUtils.randFloat(0.055, 0.12), seed + toe * 5.9),
+      toe % 2 === 0 ? materials.scree : materials.mountain,
+    );
+    toeMesh.position.set(
+      THREE.MathUtils.randFloatSpread(width * 0.86),
+      -0.04,
+      depth * THREE.MathUtils.randFloat(0.48, 0.92),
+    );
+    toeMesh.scale.set(1.8, 0.82, THREE.MathUtils.randFloat(0.5, 0.9));
+    toeMesh.rotation.y = THREE.MathUtils.randFloatSpread(0.42);
+    toeMesh.castShadow = false;
+    toeMesh.receiveShadow = true;
+    group.add(toeMesh);
+  }
+
+  return group;
+}
+
+function createDistantMesaGround(width, depth, centerZ) {
+  const geometry = new THREE.PlaneGeometry(width, depth, 64, 14);
+  geometry.rotateX(-Math.PI / 2);
+  const positions = geometry.attributes.position;
+  const colors = new Float32Array(positions.count * 3);
+
+  for (let i = 0; i < positions.count; i += 1) {
+    const worldX = positions.getX(i);
+    const worldZ = positions.getZ(i) + centerZ;
+    const lowRise = THREE.MathUtils.clamp((fbm(worldX * 0.45 + 11, worldZ * 0.35 - 7) + 0.55) * 0.75, 0, 1);
+    positions.setY(i, terrainHeight(worldX, worldZ) - 0.18 + lowRise * 0.42);
+
+    const color = rustBase.clone();
+    const mineralNoise = smoothNoise(worldX * 0.04 + 5, worldZ * 0.04 - 12);
+    color.lerp(rustLight, THREE.MathUtils.clamp((mineralNoise - 0.3) * 0.28, 0, 0.18));
+    color.lerp(washDark, THREE.MathUtils.clamp((1 - mineralNoise) * 0.18, 0, 0.14));
+    colors[i * 3] = color.r;
+    colors[i * 3 + 1] = color.g;
+    colors[i * 3 + 2] = color.b;
+  }
+
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  geometry.computeVertexNormals();
+
+  const ground = new THREE.Mesh(geometry, materials.distantGround);
+  ground.position.z = centerZ;
+  ground.receiveShadow = true;
+  return ground;
+}
+
+const mesaRangeLayout = [];
+
+for (const [x, z, width, depth, height, seed] of mesaRangeLayout) {
+  const mesa = createMesaRange(seed, width, depth, height, materials.mountain);
+  mesa.position.set(x, terrainHeight(x, z) - 0.18, z);
+  mesa.rotation.y = (smoothNoise(seed, seed + 4) - 0.5) * 0.16;
+  world.add(mesa);
 }
 
 const rocks = [];
@@ -949,6 +1203,20 @@ waistSeal.scale.set(1.18, 0.84, 1);
 waistSeal.castShadow = true;
 ship.add(waistSeal);
 
+for (const side of [-1, 1]) {
+  const hipPack = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.22, 0.12), materials.suitPanel);
+  hipPack.position.set(side * 0.38, -0.24, 0.05);
+  hipPack.rotation.set(0.06, side * -0.22, side * -0.06);
+  hipPack.castShadow = true;
+  ship.add(hipPack);
+
+  const hipPackLatch = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.025, 0.018), materials.metalTrim);
+  hipPackLatch.position.set(side * 0.38, -0.17, 0.12);
+  hipPackLatch.rotation.z = side * -0.08;
+  hipPackLatch.castShadow = true;
+  ship.add(hipPackLatch);
+}
+
 const upperTorsoPanel = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.32, 0.035), materials.suitPanel);
 upperTorsoPanel.position.set(0, 0.5, 0.285);
 upperTorsoPanel.scale.set(1, 1, 0.72);
@@ -987,6 +1255,19 @@ const chestLight = new THREE.Mesh(
 );
 chestLight.position.set(0.18, 0.35, 0.42);
 ship.add(chestLight);
+
+for (const [x, y, color] of [
+  [-0.13, 0.36, 0x2dd6ff],
+  [-0.04, 0.36, 0xffb64f],
+  [0.05, 0.36, 0xd9fff5],
+]) {
+  const indicator = new THREE.Mesh(
+    new THREE.BoxGeometry(0.045, 0.018, 0.014),
+    new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.42, roughness: 0.25 }),
+  );
+  indicator.position.set(x, y, 0.432);
+  ship.add(indicator);
+}
 
 for (const [x, y, width] of [
   [-0.18, 0.52, 0.18],
@@ -1087,18 +1368,31 @@ chinVent.position.set(0, 1.0, 0.43);
 chinVent.castShadow = true;
 ship.add(chinVent);
 
+const helmetAnimatedParts = [helmet, helmetBand, helmetCrownBand, visor, visorSeal, visorGlow, visorReflection, visorLowerReflection, chinVent];
+
+for (const side of [-1, 1]) {
+  const cheekGuard = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.16, 0.035), materials.suitPanel);
+  cheekGuard.position.set(side * 0.24, 1.12, 0.39);
+  cheekGuard.rotation.set(0.1, side * 0.28, side * 0.08);
+  cheekGuard.castShadow = true;
+  ship.add(cheekGuard);
+  helmetAnimatedParts.push(cheekGuard);
+}
+
 for (const side of [-1, 1]) {
   const helmetLatch = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.035, 16), materials.metalTrim);
   helmetLatch.position.set(side * 0.43, 1.2, 0.18);
   helmetLatch.rotation.z = Math.PI / 2;
   helmetLatch.castShadow = true;
   ship.add(helmetLatch);
+  helmetAnimatedParts.push(helmetLatch);
 
   const sideSensor = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.035, 0.055), materials.darkSuit);
   sideSensor.position.set(side * 0.36, 1.42, 0.08);
   sideSensor.rotation.y = side * 0.36;
   sideSensor.castShadow = true;
   ship.add(sideSensor);
+  helmetAnimatedParts.push(sideSensor);
 }
 
 const backpack = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.82, 0.27), materials.backpack);
@@ -1110,6 +1404,20 @@ const backpackRidge = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.08, 0.05), ma
 backpackRidge.position.set(0, 0.62, -0.545);
 backpackRidge.castShadow = true;
 ship.add(backpackRidge);
+
+const backpackAnimatedParts = [backpack, backpackRidge];
+
+for (const [x, y, sx, sy] of [
+  [-0.18, 0.42, 0.09, 0.18],
+  [0.18, 0.42, 0.09, 0.18],
+  [0, 0.04, 0.22, 0.12],
+]) {
+  const backpackPanel = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, 0.035), materials.suitPanel);
+  backpackPanel.position.set(x, y, -0.695);
+  backpackPanel.castShadow = true;
+  ship.add(backpackPanel);
+  backpackAnimatedParts.push(backpackPanel);
+}
 
 const jetpackFlames = new THREE.Group();
 const jetpackFlameGeometry = new THREE.ConeGeometry(0.09, 1.9, 20, 1, true);
@@ -1175,9 +1483,9 @@ function addRingDetail(parent, radius, y, material, thickness = 0.009) {
   return ring;
 }
 
-const laserBeamGeometry = new THREE.CylinderGeometry(0.03, 0.052, 44, 12, 1, true);
+const laserBeamGeometry = new THREE.CylinderGeometry(0.03, 0.052, 88, 12, 1, true);
 laserBeamGeometry.rotateX(Math.PI / 2);
-const laserGlowGeometry = new THREE.CylinderGeometry(0.1, 0.2, 43, 12, 1, true);
+const laserGlowGeometry = new THREE.CylinderGeometry(0.1, 0.2, 86, 12, 1, true);
 laserGlowGeometry.rotateX(Math.PI / 2);
 let handLaser = null;
 const laserBaseRotation = new THREE.Euler(0.14, -0.06, -0.1);
@@ -1239,6 +1547,12 @@ for (const side of [-1, 1]) {
   ship.add(upperArm);
   addRingDetail(upperArm, 0.102, 0.16, materials.fabricCrease, 0.007);
   addRingDetail(upperArm, 0.102, -0.08, materials.fabricCrease, 0.007);
+
+  const upperArmPatch = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.16, 0.018), materials.suitPanel);
+  upperArmPatch.position.set(0, 0.06, 0.102);
+  upperArmPatch.rotation.z = side * -0.18;
+  upperArmPatch.castShadow = true;
+  upperArm.add(upperArmPatch);
 
   const elbowPad = new THREE.Mesh(new THREE.SphereGeometry(0.075, 12, 8), materials.suitShadow);
   elbowPad.position.set(0, -0.24, 0.07);
@@ -1312,12 +1626,12 @@ for (const side of [-1, 1]) {
     laserGroup.add(muzzleFlash);
 
     const beam = new THREE.Mesh(laserBeamGeometry, materials.laserBeam.clone());
-    beam.position.set(0, 0.018, 22.55);
+    beam.position.set(0, 0.018, 44.55);
     beam.visible = false;
     laserGroup.add(beam);
 
     const glow = new THREE.Mesh(laserGlowGeometry, materials.laserBeam.clone());
-    glow.position.set(0, 0.018, 22.3);
+    glow.position.set(0, 0.018, 43.8);
     glow.visible = false;
     laserGroup.add(glow);
 
@@ -1335,6 +1649,14 @@ for (const side of [-1, 1]) {
   thighRing.castShadow = true;
   ship.add(thighRing);
 
+  const upperLeg = new THREE.Mesh(new THREE.CapsuleGeometry(0.105, 0.34, 8, 16), materials.ship);
+  upperLeg.position.set(side * 0.24, -0.58, 0.055);
+  upperLeg.rotation.z = side * -0.06;
+  upperLeg.castShadow = true;
+  ship.add(upperLeg);
+  addRingDetail(upperLeg, 0.112, 0.12, materials.fabricCrease, 0.007);
+  addRingDetail(upperLeg, 0.112, -0.09, materials.fabricCrease, 0.007);
+
   const leg = new THREE.Mesh(new THREE.CapsuleGeometry(0.115, 0.56, 8, 16), materials.ship);
   leg.position.set(side * 0.24, -0.72, 0.03);
   leg.rotation.z = side * -0.09;
@@ -1347,6 +1669,12 @@ for (const side of [-1, 1]) {
   shinPlate.position.set(0, -0.1, 0.116);
   shinPlate.castShadow = true;
   leg.add(shinPlate);
+
+  const calfHinge = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.19, 10), materials.metalTrim);
+  calfHinge.position.set(side * -0.075, -0.08, 0.055);
+  calfHinge.rotation.z = Math.PI / 2;
+  calfHinge.castShadow = true;
+  leg.add(calfHinge);
 
   const kneePad = new THREE.Mesh(new THREE.SphereGeometry(0.09, 14, 8), materials.suitShadow);
   kneePad.position.set(side * 0.25, -0.75, 0.17);
@@ -1412,6 +1740,7 @@ for (const side of [-1, 1]) {
     glove,
     hip,
     thighRing,
+    upperLeg,
     leg,
     kneePad,
     ankleRing,
@@ -1420,6 +1749,7 @@ for (const side of [-1, 1]) {
     base: {
       shoulderPosition: shoulder.position.clone(),
       shoulderRingPosition: shoulderRing.position.clone(),
+      shoulderRingRotation: shoulderRing.rotation.clone(),
       upperArmPosition: upperArm.position.clone(),
       upperArmRotation: upperArm.rotation.clone(),
       wristRingPosition: wristRing.position.clone(),
@@ -1428,9 +1758,12 @@ for (const side of [-1, 1]) {
       hipPosition: hip.position.clone(),
       thighRingPosition: thighRing.position.clone(),
       thighRingRotation: thighRing.rotation.clone(),
+      upperLegPosition: upperLeg.position.clone(),
+      upperLegRotation: upperLeg.rotation.clone(),
       legPosition: leg.position.clone(),
       legRotation: leg.rotation.clone(),
       kneePadPosition: kneePad.position.clone(),
+      kneePadRotation: kneePad.rotation.clone(),
       ankleRingPosition: ankleRing.position.clone(),
       ankleRingRotation: ankleRing.rotation.clone(),
       bootPosition: boot.position.clone(),
@@ -1449,6 +1782,29 @@ ship.add(antenna);
 const antennaTip = new THREE.Mesh(new THREE.SphereGeometry(0.045, 10, 8), materials.wing);
 antennaTip.position.set(0.39, 1.82, -0.02);
 ship.add(antennaTip);
+
+const bodyRig = {
+  torso: {
+    mesh: torso,
+    position: torso.position.clone(),
+    rotation: torso.rotation.clone(),
+  },
+  waistSeal: {
+    mesh: waistSeal,
+    position: waistSeal.position.clone(),
+    rotation: waistSeal.rotation.clone(),
+  },
+  backpackParts: backpackAnimatedParts.map((mesh) => ({
+    mesh,
+    position: mesh.position.clone(),
+    rotation: mesh.rotation.clone(),
+  })),
+  headParts: [...helmetAnimatedParts, antenna, antennaTip].map((mesh) => ({
+    mesh,
+    position: mesh.position.clone(),
+    rotation: mesh.rotation.clone(),
+  })),
+};
 
 ship.position.set(0, terrainHeight(0, playerMovement.startZ) + playerGroundOffset, playerMovement.startZ);
 scene.add(ship);
@@ -1654,7 +2010,7 @@ function updateLaser(delta) {
     handLaser.group.updateMatrixWorld(true);
     handLaser.group.localToWorld(laserBeamOrigin.set(0, 0.018, 0.58));
     laserBeamDirection.copy(laserForwardLocal).transformDirection(handLaser.group.matrixWorld).normalize();
-    const rock = findRockHitByRay(laserBeamOrigin, laserBeamDirection, 48);
+    const rock = findRockHitByRay(laserBeamOrigin, laserBeamDirection, 96);
     if (rock) {
       shatterRock(rock, rock.position);
       state.beamHitCooldown = 0.18;
@@ -1676,7 +2032,7 @@ function emitLaserShot() {
   shot.quaternion.setFromUnitVectors(laserForwardBasis, laserShotDirection);
   shot.visible = true;
   shot.userData.age = 0;
-  shot.userData.lifetime = 2.7;
+  shot.userData.lifetime = 5.4;
   shot.userData.velocity.copy(laserShotDirection).multiplyScalar(34);
   shot.userData.core.material.opacity = 1;
   shot.userData.trail.material.opacity = 0.58;
@@ -2107,7 +2463,52 @@ function updateRunAnimation(delta, movementAmount, movementDirection, sprintAmou
   const runAmount = Math.min(1, movementAmount) * groundedAmount;
   const gaitAmount = THREE.MathUtils.smoothstep(runAmount, 0, 1);
   if (runAmount > 0.001) {
-    state.runCycle += delta * (4.2 + runAmount * 3.7) * movementDirection * (1 + sprintAmount * 0.55);
+    state.runCycle += delta * (3.65 + runAmount * 3.15) * movementDirection * (1 + sprintAmount * 0.45);
+  }
+
+  const bodyPhase = state.runCycle;
+  const bodySway = Math.sin(bodyPhase) * runAmount;
+  const bodyRise = Math.max(0, -Math.cos(bodyPhase * 2)) * runAmount;
+  const suitCompression = Math.max(0, Math.cos(bodyPhase * 2)) * runAmount;
+  const breathing = Math.sin(clock.elapsedTime * 1.55) * 0.006 * (1 - runAmount);
+  const steeringLean = THREE.MathUtils.clamp(state.steerVelocity, -1, 1) * 0.08;
+  const sprintLean = sprintAmount * runAmount;
+
+  bodyRig.torso.mesh.position.copy(bodyRig.torso.position);
+  bodyRig.torso.mesh.position.y += bodyRise * 0.022 - suitCompression * 0.016 + breathing;
+  bodyRig.torso.mesh.position.x += bodySway * 0.012;
+  bodyRig.torso.mesh.position.z += sprintLean * 0.12;
+  bodyRig.torso.mesh.rotation.copy(bodyRig.torso.rotation);
+  bodyRig.torso.mesh.rotation.x += runAmount * 0.035 + sprintLean * 0.42 + flightAmount * 0.16;
+  bodyRig.torso.mesh.rotation.y += bodySway * -0.055;
+  bodyRig.torso.mesh.rotation.z += steeringLean + bodySway * -0.035;
+
+  bodyRig.waistSeal.mesh.position.copy(bodyRig.waistSeal.position);
+  bodyRig.waistSeal.mesh.position.y += bodyRise * 0.014 - suitCompression * 0.018;
+  bodyRig.waistSeal.mesh.position.z += sprintLean * 0.052;
+  bodyRig.waistSeal.mesh.rotation.copy(bodyRig.waistSeal.rotation);
+  bodyRig.waistSeal.mesh.rotation.x += sprintLean * 0.22;
+  bodyRig.waistSeal.mesh.rotation.y += bodySway * 0.045;
+  bodyRig.waistSeal.mesh.rotation.z += steeringLean * 0.45;
+
+  for (const part of bodyRig.backpackParts) {
+    part.mesh.position.copy(part.position);
+    part.mesh.position.y += bodyRise * 0.018 + flightAmount * 0.035;
+    part.mesh.position.z -= flightAmount * 0.06 + sprintLean * 0.075;
+    part.mesh.rotation.copy(part.rotation);
+    part.mesh.rotation.x += sprintLean * 0.32 - flightAmount * 0.16;
+    part.mesh.rotation.z += bodySway * -0.025 + steeringLean * 0.6;
+  }
+
+  for (const part of bodyRig.headParts) {
+    part.mesh.position.copy(part.position);
+    part.mesh.position.x += bodySway * 0.008;
+    part.mesh.position.y += bodyRise * 0.012 + breathing * 0.4 - flightAmount * 0.018;
+    part.mesh.position.z += runAmount * 0.012 + sprintLean * 0.115 - flightAmount * 0.035;
+    part.mesh.rotation.copy(part.rotation);
+    part.mesh.rotation.x += sprintLean * 0.28 - bodyRise * 0.018 - flightAmount * 0.1;
+    part.mesh.rotation.y += bodySway * -0.038;
+    part.mesh.rotation.z += bodySway * -0.022 + steeringLean * 0.35;
   }
 
   for (const rig of limbRig) {
@@ -2115,22 +2516,48 @@ function updateRunAnimation(delta, movementAmount, movementDirection, sprintAmou
     const phaseSin = Math.sin(phase);
     const phaseCos = Math.cos(phase);
     const stride = phaseSin * runAmount;
+    const forwardStride = Math.max(0, stride);
+    const backwardStride = Math.min(0, stride);
+    const thighStride = forwardStride + backwardStride * 0.42;
+    const lowerLegStride = forwardStride + backwardStride * 0.32;
+    const hipSocketDrop = gaitAmount * 0.035;
+    const rearLegTuck = Math.max(0, -backwardStride);
     const footLift = Math.pow(Math.max(0, phaseCos), 0.72) * runAmount;
     const footPlant = Math.pow(Math.max(0, -phaseCos), 2.2) * runAmount;
+    const stepEase = Math.sin(phase + Math.PI * 0.18) * runAmount;
+    const kneeSwing = Math.max(0, Math.sin(phase + Math.PI * 0.36)) * runAmount;
+    const heelStrike = Math.max(0, -Math.sin(phase - Math.PI * 0.16)) * runAmount;
+    const toePush = Math.max(0, Math.sin(phase - Math.PI * 0.38)) * runAmount;
+    const footRoll = heelStrike * 0.18 - toePush * 0.28;
+    const legLateralSway = Math.sin(phase + Math.PI * 0.5) * runAmount * 0.018;
     const armStride = -phaseSin * runAmount * (0.92 + sprintAmount * 0.12);
     const armLift = Math.pow(Math.max(0, -phaseCos), 0.78) * runAmount;
-    const kneeBend = (footLift * 0.42 + footPlant * 0.12) * gaitAmount;
+    const kneeBend = (footLift * 0.5 + kneeSwing * 0.28 + footPlant * 0.08) * gaitAmount;
+    const kneeFlex = THREE.MathUtils.clamp(kneeBend * 1.45 + toePush * 0.18 - footPlant * 0.06, 0, 0.78);
     const groundSettle = footPlant * 0.035;
     const flightFlutter = Math.sin(clock.elapsedTime * 7 + rig.side * 0.8) * flightAmount;
     const { base } = rig;
 
+    rig.shoulder.position.copy(base.shoulderPosition);
+    rig.shoulder.position.y += armLift * 0.018 - gaitAmount * 0.01 - flightAmount * 0.035;
+    rig.shoulder.position.z += armStride * 0.038 - flightAmount * 0.08;
+    rig.shoulder.position.x += rig.side * (bodySway * -0.008 + flightAmount * 0.012);
+
+    rig.shoulderRing.position.copy(base.shoulderRingPosition);
+    rig.shoulderRing.position.y += armLift * 0.018 - gaitAmount * 0.01 - flightAmount * 0.035;
+    rig.shoulderRing.position.z += armStride * 0.04 - flightAmount * 0.08;
+    rig.shoulderRing.position.x += rig.side * (bodySway * -0.008 + flightAmount * 0.012);
+    rig.shoulderRing.rotation.copy(base.shoulderRingRotation);
+    rig.shoulderRing.rotation.x += armStride * 0.22 - flightAmount * 0.12;
+    rig.shoulderRing.rotation.z += rig.side * (bodySway * 0.025 + flightAmount * 0.06);
+
     rig.upperArm.position.copy(base.upperArmPosition);
     rig.upperArm.position.x += rig.side * flightAmount * 0.015;
-    rig.upperArm.position.y += armLift * 0.045 - gaitAmount * 0.012;
+    rig.upperArm.position.y += armLift * 0.05 - gaitAmount * 0.012;
     rig.upperArm.position.y -= flightAmount * 0.035;
-    rig.upperArm.position.z += armStride * 0.13 - flightAmount * 0.18;
+    rig.upperArm.position.z += armStride * 0.15 - flightAmount * 0.18;
     rig.upperArm.rotation.copy(base.upperArmRotation);
-    rig.upperArm.rotation.x += armStride * (0.7 + sprintAmount * 0.18);
+    rig.upperArm.rotation.x += armStride * (0.78 + sprintAmount * 0.16);
     rig.upperArm.rotation.z += rig.side * (runAmount * (0.06 + sprintAmount * 0.02) - footPlant * 0.035);
     rig.upperArm.rotation.x -= flightAmount * (0.68 + flightFlutter * 0.05);
     rig.upperArm.rotation.z += rig.side * flightAmount * 0.06;
@@ -2148,59 +2575,78 @@ function updateRunAnimation(delta, movementAmount, movementDirection, sprintAmou
     rig.glove.position.x -= rig.side * flightAmount * 0.045;
     rig.glove.position.y += armLift * 0.074 - gaitAmount * 0.02;
     rig.glove.position.y -= flightAmount * 0.08;
-    rig.glove.position.z += armStride * 0.32 - flightAmount * 0.48;
+    rig.glove.position.z += armStride * 0.36 - flightAmount * 0.48;
+
+    rig.hip.position.copy(base.hipPosition);
+    rig.hip.position.x += rig.side * (bodySway * 0.012 + legLateralSway * 0.4 - flightAmount * 0.01);
+    rig.hip.position.y += bodyRise * 0.02 - suitCompression * 0.018 - hipSocketDrop * 0.35 + flightAmount * 0.045;
+    rig.hip.position.z += thighStride * 0.012 - rearLegTuck * 0.018 - flightAmount * 0.08;
 
     rig.thighRing.position.copy(base.thighRingPosition);
-    rig.thighRing.position.x -= rig.side * flightAmount * 0.015;
-    rig.thighRing.position.y += footLift * 0.045 - groundSettle * 0.45;
+    rig.thighRing.position.x += rig.side * (legLateralSway * 0.35 - flightAmount * 0.015);
+    rig.thighRing.position.y += footLift * 0.04 - groundSettle * 0.45 - hipSocketDrop;
     rig.thighRing.position.y += flightAmount * 0.06;
-    rig.thighRing.position.z += stride * 0.105 - footPlant * 0.025 - flightAmount * 0.1;
+    rig.thighRing.position.z += thighStride * 0.064 - rearLegTuck * 0.026 - footPlant * 0.012 + stepEase * 0.012 - flightAmount * 0.1;
     rig.thighRing.rotation.copy(base.thighRingRotation);
-    rig.thighRing.rotation.x += stride * 0.32 - footPlant * 0.08;
+    rig.thighRing.rotation.x += thighStride * 0.25 + kneeSwing * 0.05 - footPlant * 0.055;
+    rig.thighRing.rotation.z += rig.side * legLateralSway * 0.5;
     rig.thighRing.rotation.x -= flightAmount * 0.18;
 
+    rig.upperLeg.position.copy(base.upperLegPosition);
+    rig.upperLeg.position.x += rig.side * (legLateralSway * 0.55 - flightAmount * 0.018);
+    rig.upperLeg.position.y += footLift * 0.055 - groundSettle * 0.62 - hipSocketDrop * 0.92 + flightAmount * 0.08;
+    rig.upperLeg.position.z += thighStride * 0.082 - rearLegTuck * 0.026 + kneeFlex * 0.028 - footPlant * 0.012 - flightAmount * 0.14;
+    rig.upperLeg.rotation.copy(base.upperLegRotation);
+    rig.upperLeg.rotation.x += thighStride * 0.42 - kneeFlex * 0.16 - footPlant * 0.05 - flightAmount * 0.36;
+    rig.upperLeg.rotation.z += rig.side * (legLateralSway * 0.65 - footPlant * 0.012);
+
     rig.leg.position.copy(base.legPosition);
-    rig.leg.position.x -= rig.side * flightAmount * 0.025;
-    rig.leg.position.y += footLift * 0.105 - groundSettle;
+    rig.leg.position.x += rig.side * (legLateralSway * 0.7 - flightAmount * 0.025);
+    rig.leg.position.y += footLift * 0.095 + kneeSwing * 0.028 - kneeFlex * 0.018 - groundSettle - hipSocketDrop;
     rig.leg.position.y += flightAmount * 0.12;
-    rig.leg.position.z += stride * (0.16 + sprintAmount * 0.05) - footPlant * 0.035 - flightAmount * 0.22;
+    rig.leg.position.z += thighStride * (0.098 + sprintAmount * 0.022) - rearLegTuck * 0.034 - footPlant * 0.018 - kneeSwing * 0.02 + kneeFlex * 0.065 + stepEase * 0.012 - flightAmount * 0.22;
     rig.leg.rotation.copy(base.legRotation);
-    rig.leg.rotation.x += stride * (0.7 + sprintAmount * 0.2) - kneeBend * 0.18;
-    rig.leg.rotation.z += rig.side * (runAmount * 0.032 - footPlant * 0.025);
+    rig.leg.rotation.x += thighStride * (0.42 + sprintAmount * 0.08) - kneeFlex * 0.72 + toePush * 0.1 + heelStrike * 0.05;
+    rig.leg.rotation.z += rig.side * (runAmount * 0.026 + legLateralSway * 0.8 - footPlant * 0.018);
     rig.leg.rotation.x -= flightAmount * (0.95 + flightFlutter * 0.06);
     rig.leg.rotation.z -= rig.side * flightAmount * 0.03;
 
     rig.kneePad.position.copy(base.kneePadPosition);
-    rig.kneePad.position.x -= rig.side * flightAmount * 0.025;
-    rig.kneePad.position.y += footLift * 0.12 + kneeBend * 0.055 - groundSettle;
+    rig.kneePad.position.x += rig.side * (legLateralSway * 0.8 - flightAmount * 0.025);
+    rig.kneePad.position.y += footLift * 0.102 + kneeFlex * 0.055 - groundSettle - hipSocketDrop;
     rig.kneePad.position.y += flightAmount * 0.13;
-    rig.kneePad.position.z += stride * 0.19 - kneeBend * 0.085 - footPlant * 0.035 - flightAmount * 0.28;
+    rig.kneePad.position.z += thighStride * 0.088 - rearLegTuck * 0.035 + kneeFlex * 0.11 - footPlant * 0.018 + stepEase * 0.01 - flightAmount * 0.28;
+    rig.kneePad.rotation.copy(base.kneePadRotation);
+    rig.kneePad.rotation.x += kneeFlex * 0.46 - footPlant * 0.08;
 
     rig.ankleRing.position.copy(base.ankleRingPosition);
-    rig.ankleRing.position.x -= rig.side * flightAmount * 0.03;
-    rig.ankleRing.position.y += footLift * 0.135 - groundSettle * 1.1;
+    rig.ankleRing.position.x += rig.side * (legLateralSway - flightAmount * 0.03);
+    rig.ankleRing.position.y += footLift * 0.132 + kneeSwing * 0.018 - kneeFlex * 0.04 - groundSettle * 1.1 - hipSocketDrop * 0.7;
     rig.ankleRing.position.y += flightAmount * 0.12;
-    rig.ankleRing.position.z += stride * 0.24 - kneeBend * 0.12 - footPlant * 0.055 - flightAmount * 0.34;
+    rig.ankleRing.position.z += lowerLegStride * 0.118 - rearLegTuck * 0.044 + kneeFlex * 0.035 - footPlant * 0.03 + toePush * 0.018 - flightAmount * 0.34;
     rig.ankleRing.rotation.copy(base.ankleRingRotation);
-    rig.ankleRing.rotation.x += stride * 0.5 - footLift * 0.22 + footPlant * 0.08;
+    rig.ankleRing.rotation.x += lowerLegStride * 0.26 - kneeFlex * 0.18 - footLift * 0.1 + footPlant * 0.08 + footRoll;
+    rig.ankleRing.rotation.z += rig.side * (legLateralSway * 0.9 + heelStrike * 0.035);
     rig.ankleRing.rotation.x -= flightAmount * 0.58;
 
     rig.boot.position.copy(base.bootPosition);
-    rig.boot.position.x -= rig.side * flightAmount * 0.035;
-    rig.boot.position.y += footLift * 0.155 - groundSettle * 1.35;
+    rig.boot.position.x += rig.side * (legLateralSway * 1.15 - flightAmount * 0.035);
+    rig.boot.position.y += footLift * 0.15 + kneeSwing * 0.012 - kneeFlex * 0.035 - groundSettle * 1.35 - hipSocketDrop * 0.55;
     rig.boot.position.y += flightAmount * 0.1;
-    rig.boot.position.z += stride * (0.29 + sprintAmount * 0.07) - kneeBend * 0.16 - footPlant * 0.08 - flightAmount * 0.44;
+    rig.boot.position.z += lowerLegStride * (0.13 + sprintAmount * 0.028) - rearLegTuck * 0.052 + kneeFlex * 0.04 - footPlant * 0.04 + toePush * 0.02 - flightAmount * 0.44;
     rig.boot.rotation.copy(base.bootRotation);
-    rig.boot.rotation.x += stride * 0.38 - footLift * 0.34 + footPlant * 0.12;
+    rig.boot.rotation.x += lowerLegStride * 0.2 - kneeFlex * 0.22 - footLift * 0.15 + footPlant * 0.1 + footRoll;
+    rig.boot.rotation.z += rig.side * (legLateralSway * 1.1 + heelStrike * 0.04);
     rig.boot.rotation.x -= flightAmount * 1.04;
 
     rig.bootSole.position.copy(base.bootSolePosition);
-    rig.bootSole.position.x -= rig.side * flightAmount * 0.035;
-    rig.bootSole.position.y += footLift * 0.155 - groundSettle * 1.35;
+    rig.bootSole.position.x += rig.side * (legLateralSway * 1.15 - flightAmount * 0.035);
+    rig.bootSole.position.y += footLift * 0.15 + kneeSwing * 0.012 - kneeFlex * 0.035 - groundSettle * 1.35 - hipSocketDrop * 0.55;
     rig.bootSole.position.y += flightAmount * 0.1;
-    rig.bootSole.position.z += stride * (0.29 + sprintAmount * 0.07) - kneeBend * 0.16 - footPlant * 0.08 - flightAmount * 0.44;
+    rig.bootSole.position.z += lowerLegStride * (0.13 + sprintAmount * 0.028) - rearLegTuck * 0.052 + kneeFlex * 0.04 - footPlant * 0.04 + toePush * 0.02 - flightAmount * 0.44;
     rig.bootSole.rotation.copy(base.bootSoleRotation);
-    rig.bootSole.rotation.x += stride * 0.38 - footLift * 0.34 + footPlant * 0.12;
+    rig.bootSole.rotation.x += lowerLegStride * 0.2 - kneeFlex * 0.22 - footLift * 0.15 + footPlant * 0.1 + footRoll;
+    rig.bootSole.rotation.z += rig.side * (legLateralSway * 1.1 + heelStrike * 0.04);
     rig.bootSole.rotation.x -= flightAmount * 1.04;
     rig.isFootPlanted = flightAmount < 0.08 && runAmount > 0.18 && footLift < 0.035;
   }
