@@ -30,6 +30,47 @@ button {
   font: inherit;
 }
 
+#app.is-playing {
+  cursor: crosshair;
+}
+
+#app.is-playing.is-first-person {
+  cursor: none;
+}
+
+#first-person-crosshair {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  width: 18px;
+  height: 18px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: 3;
+  filter: drop-shadow(0 1px 2px #000);
+}
+
+#first-person-crosshair::before,
+#first-person-crosshair::after {
+  content: '';
+  position: absolute;
+  background: #effff0;
+}
+
+#first-person-crosshair::before {
+  left: 8px;
+  top: 0;
+  width: 2px;
+  height: 18px;
+}
+
+#first-person-crosshair::after {
+  left: 0;
+  top: 8px;
+  width: 18px;
+  height: 2px;
+}
+
 #game-canvas {
   position: fixed;
   inset: 0;

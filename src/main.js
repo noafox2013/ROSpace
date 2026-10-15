@@ -1,7 +1,10 @@
 import './styles.css';
 import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 
 const canvas = document.querySelector('#game-canvas');
+const firstPersonCrosshair = document.querySelector('#first-person-crosshair');
+const crosshairPosition = new THREE.Vector3();
 const scoreEl = document.querySelector('#score');
 const bestEl = document.querySelector('#best');
 const overlay = document.querySelector('#overlay');
@@ -17,7 +20,7 @@ const playerMovement = {
   depthSpeed: 4.6,
   sprintMultiplier: 1.72,
   jetpackLift: 9.5,
-  jetpackGravity: 6.6,
+  jetpackGravity: 9.504,
   jetpackMaxHeight: 9.68,
   acceleration: 8.5,
   deceleration: 5.2,
@@ -49,6 +52,7 @@ const state = {
   faceYaw: Math.PI,
   cameraOrbitYaw: Math.PI,
   cameraPitch: 0,
+  firstPerson: false,
   runCycle: 0,
 };
 const activeKeys = new Set();
@@ -125,6 +129,7 @@ scene.background = new THREE.Color(0xa7bfca);
 scene.fog = new THREE.Fog(0xb7a89f, 175, 460);
 
 const camera = new THREE.PerspectiveCamera(62, 1, 0.1, 720);
+scene.add(camera);
 camera.position.set(0, 4.7, 12);
 camera.lookAt(0, 0.2, -24);
 
@@ -143,7 +148,8 @@ keyLight.shadow.bias = -0.00008;
 keyLight.shadow.normalBias = 0.035;
 keyLight.shadow.radius = 3.2;
 keyLight.shadow.camera.near = 0.5;
-keyLight.shadow.camera.far = 80;
+// Include the ground beneath the player even at the jetpack's maximum height.
+keyLight.shadow.camera.far = keyLightDistance + playerMovement.jetpackMaxHeight / sunDirection.y + 16;
 keyLight.shadow.camera.left = -32;
 keyLight.shadow.camera.right = 32;
 keyLight.shadow.camera.top = 32;
@@ -253,7 +259,7 @@ const sun = new THREE.Sprite(
     transparent: true,
     opacity: 1,
     depthWrite: false,
-    depthTest: false,
+    depthTest: true,
     blending: THREE.AdditiveBlending,
     toneMapped: false,
   }),
@@ -352,7 +358,7 @@ const materials = {
     emissiveIntensity: 1.7,
   }),
   laserBeam: new THREE.MeshBasicMaterial({
-    color: 0x72f6ff,
+    color: 0x58ff63,
     transparent: true,
     opacity: 0,
     depthWrite: false,
@@ -366,7 +372,7 @@ const materials = {
     blending: THREE.AdditiveBlending,
   }),
   laserShotCore: new THREE.MeshBasicMaterial({
-    color: 0x0a63ff,
+    color: 0xd4f5ff,
     transparent: true,
     opacity: 0,
     depthWrite: false,
@@ -491,18 +497,6 @@ const materials = {
     metalness: 0,
     flatShading: true,
     fog: false,
-  }),
-  cloud: new THREE.MeshBasicMaterial({
-    color: 0xe7ecea,
-    transparent: true,
-    opacity: 0.26,
-    depthWrite: false,
-  }),
-  cloudShade: new THREE.MeshBasicMaterial({
-    color: 0xbec3bf,
-    transparent: true,
-    opacity: 0.16,
-    depthWrite: false,
   }),
   dust: new THREE.MeshStandardMaterial({
     color: 0xd49a65,
@@ -1106,7 +1100,39 @@ for (let i = 0; i < 96; i += 1) {
 }
 
 const clouds = [];
-const cloudPuffGeometry = new THREE.SphereGeometry(1, 18, 10);
+// Soft density textures give the billows wispy edges instead of solid ellipsoids.
+function createCloudMaterial(seed) {
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const context = canvas.getContext('2d');
+  const pixels = context.createImageData(size, size);
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const u = (x / (size - 1) - 0.5) * 2;
+      const v = (y / (size - 1) - 0.5) * 2;
+      const coarse = smoothNoise(u * 3.8 + seed, v * 3.8 + seed * 2);
+      const detail = smoothNoise(u * 12 + seed, v * 12 - seed);
+      const fine = smoothNoise(u * 29 - seed, v * 29 + seed);
+      const radius = Math.sqrt(u * u + v * v);
+      const density = 1 - THREE.MathUtils.smoothstep(radius + (coarse - 0.5) * 0.32, 0.38, 0.97);
+      const alpha = density * (0.66 + coarse * 0.22 + detail * 0.09 + fine * 0.03);
+      // Warm sunlit crowns and cooler, denser undersides.
+      const light = THREE.MathUtils.clamp(0.73 - v * 0.2 + (coarse - 0.5) * 0.18 + (detail - 0.5) * 0.055, 0, 1);
+      const index = (y * size + x) * 4;
+      pixels.data[index] = 172 + light * 79;
+      pixels.data[index + 1] = 185 + light * 67;
+      pixels.data[index + 2] = 194 + light * 59;
+      pixels.data[index + 3] = alpha * 255;
+    }
+  }
+  context.putImageData(pixels, 0, 0);
+  const map = new THREE.CanvasTexture(canvas);
+  map.colorSpace = THREE.SRGBColorSpace;
+  return new THREE.SpriteMaterial({ map, transparent: true, opacity: 0.64, depthWrite: false, fog: true });
+}
+
+const cloudMaterials = [11, 37, 83].map(createCloudMaterial);
 
 function placeCloudAround(cloud, originX, originZ, range = 320) {
   const angle = THREE.MathUtils.randFloat(0, Math.PI * 2);
@@ -1116,32 +1142,30 @@ function placeCloudAround(cloud, originX, originZ, range = 320) {
   cloud.position.z = originZ + Math.cos(angle) * distance;
 }
 
-for (let i = 0; i < 28; i += 1) {
+for (let i = 0; i < 56; i += 1) {
   const cloud = new THREE.Group();
-  const puffCount = THREE.MathUtils.randInt(7, 11);
+  const width = THREE.MathUtils.randFloat(16, 31);
+  const depth = THREE.MathUtils.randFloat(4, 9);
+  const puffCount = THREE.MathUtils.randInt(9, 14);
   for (let puff = 0; puff < puffCount; puff += 1) {
-    const row = puff % 2;
-    const mesh = new THREE.Mesh(cloudPuffGeometry, materials.cloud);
-    mesh.scale.set(
-      THREE.MathUtils.randFloat(3.8, 7.6),
-      THREE.MathUtils.randFloat(0.42, 1.05),
-      THREE.MathUtils.randFloat(1.5, 3.1),
+    const t = puff / (puffCount - 1);
+    const crown = Math.sin(t * Math.PI);
+    const billow = new THREE.Sprite(cloudMaterials[(i + puff) % cloudMaterials.length]);
+    const size = THREE.MathUtils.randFloat(5, 8) * (0.65 + crown * 0.65);
+    billow.scale.set(size * THREE.MathUtils.randFloat(1.15, 1.65), size * THREE.MathUtils.randFloat(0.65, 1), 1);
+    billow.position.set(
+      (t - 0.5) * width + THREE.MathUtils.randFloatSpread(2),
+      crown * THREE.MathUtils.randFloat(1.8, 4) + THREE.MathUtils.randFloatSpread(0.8),
+      THREE.MathUtils.randFloatSpread(depth),
     );
-    mesh.position.set(
-      puff * THREE.MathUtils.randFloat(1.9, 2.8) + THREE.MathUtils.randFloatSpread(1.2),
-      THREE.MathUtils.randFloat(-0.15, 0.55),
-      row * THREE.MathUtils.randFloat(1.2, 2.4) + THREE.MathUtils.randFloatSpread(1.2),
-    );
-    mesh.rotation.y = THREE.MathUtils.randFloat(-0.32, 0.32);
-    cloud.add(mesh);
-
-    if (puff % 3 !== 0) {
-      const shade = new THREE.Mesh(cloudPuffGeometry, materials.cloudShade);
-      shade.scale.copy(mesh.scale).multiply(new THREE.Vector3(0.94, 0.36, 0.9));
-      shade.position.set(mesh.position.x + THREE.MathUtils.randFloatSpread(0.5), mesh.position.y - 0.38, mesh.position.z + THREE.MathUtils.randFloatSpread(0.35));
-      shade.rotation.y = mesh.rotation.y;
-      cloud.add(shade);
-    }
+    cloud.add(billow);
+  }
+  // Thin, broad wisps tie the billows into a continuous, flatter cloud base.
+  for (let wisp = 0; wisp < 3; wisp += 1) {
+    const base = new THREE.Sprite(cloudMaterials[(i + wisp) % cloudMaterials.length]);
+    base.scale.set(width * 0.7, 2.6, 1);
+    base.position.set((wisp - 1) * width * 0.22, -0.5, wisp - 1);
+    cloud.add(base);
   }
   cloud.scale.setScalar(THREE.MathUtils.randFloat(0.78, 1.18));
   cloud.rotation.y = THREE.MathUtils.randFloat(-0.22, 0.22);
@@ -1395,17 +1419,19 @@ for (const side of [-1, 1]) {
   helmetAnimatedParts.push(sideSensor);
 }
 
+const backpackRig = new THREE.Group();
+backpackRig.position.copy(torso.position);
+ship.add(backpackRig);
+
 const backpack = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.82, 0.27), materials.backpack);
 backpack.position.set(0, 0.3, -0.39);
 backpack.castShadow = true;
-ship.add(backpack);
+backpackRig.add(backpack);
 
 const backpackRidge = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.08, 0.05), materials.metalTrim);
 backpackRidge.position.set(0, 0.62, -0.545);
 backpackRidge.castShadow = true;
-ship.add(backpackRidge);
-
-const backpackAnimatedParts = [backpack, backpackRidge];
+backpackRig.add(backpackRidge);
 
 for (const [x, y, sx, sy] of [
   [-0.18, 0.42, 0.09, 0.18],
@@ -1415,8 +1441,7 @@ for (const [x, y, sx, sy] of [
   const backpackPanel = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, 0.035), materials.suitPanel);
   backpackPanel.position.set(x, y, -0.695);
   backpackPanel.castShadow = true;
-  ship.add(backpackPanel);
-  backpackAnimatedParts.push(backpackPanel);
+  backpackRig.add(backpackPanel);
 }
 
 const jetpackFlames = new THREE.Group();
@@ -1433,7 +1458,7 @@ for (const side of [-1, 1]) {
   nozzle.position.set(x, 0.08, -0.575);
   nozzle.rotation.x = Math.PI / 2;
   nozzle.castShadow = true;
-  ship.add(nozzle);
+  backpackRig.add(nozzle);
 
   const flame = new THREE.Group();
   const outer = new THREE.Mesh(jetpackFlameGeometry, materials.jetpackFlame.clone());
@@ -1444,21 +1469,21 @@ for (const side of [-1, 1]) {
   flame.add(outer, core);
   jetpackFlames.add(flame);
 }
-ship.add(jetpackFlames);
+backpackRig.add(jetpackFlames);
 
 for (const side of [-1, 1]) {
   const oxygenCanister = new THREE.Mesh(new THREE.CylinderGeometry(0.065, 0.075, 0.72, 16), materials.metalTrim);
   oxygenCanister.position.set(side * 0.22, 0.28, -0.59);
   oxygenCanister.rotation.x = 0.05;
   oxygenCanister.castShadow = true;
-  ship.add(oxygenCanister);
+  backpackRig.add(oxygenCanister);
 
   for (const y of [0.03, 0.53]) {
     const canisterStrap = new THREE.Mesh(new THREE.TorusGeometry(0.07, 0.008, 8, 18), materials.rubber);
     canisterStrap.position.set(side * 0.22, y, -0.59);
     canisterStrap.rotation.x = Math.PI / 2;
     canisterStrap.castShadow = true;
-    ship.add(canisterStrap);
+    backpackRig.add(canisterStrap);
   }
 }
 
@@ -1466,13 +1491,18 @@ const lifeSupportHose = new THREE.Mesh(new THREE.TorusGeometry(0.41, 0.014, 8, 3
 lifeSupportHose.position.set(-0.28, 0.68, -0.24);
 lifeSupportHose.rotation.set(0.34, -0.18, 1.78);
 lifeSupportHose.castShadow = true;
-ship.add(lifeSupportHose);
+backpackRig.add(lifeSupportHose);
 
 const secondaryHose = new THREE.Mesh(new THREE.TorusGeometry(0.36, 0.011, 8, 32, Math.PI * 1.08), materials.rubber);
 secondaryHose.position.set(0.27, 0.51, -0.25);
 secondaryHose.rotation.set(0.45, 0.16, -1.65);
 secondaryHose.castShadow = true;
-ship.add(secondaryHose);
+backpackRig.add(secondaryHose);
+
+// Preserve the resting positions while moving every component around one pivot.
+for (const part of backpackRig.children) {
+  part.position.sub(backpackRig.position);
+}
 
 function addRingDetail(parent, radius, y, material, thickness = 0.009) {
   const ring = new THREE.Mesh(new THREE.TorusGeometry(radius, thickness, 8, 24), material);
@@ -1483,14 +1513,12 @@ function addRingDetail(parent, radius, y, material, thickness = 0.009) {
   return ring;
 }
 
-const laserBeamGeometry = new THREE.CylinderGeometry(0.03, 0.052, 88, 12, 1, true);
+const laserBeamGeometry = new THREE.CylinderGeometry(0.031185, 0.054054, 88, 32, 1, false);
 laserBeamGeometry.rotateX(Math.PI / 2);
-const laserGlowGeometry = new THREE.CylinderGeometry(0.1, 0.2, 86, 12, 1, true);
-laserGlowGeometry.rotateX(Math.PI / 2);
 let handLaser = null;
 const laserBaseRotation = new THREE.Euler(0.14, -0.06, -0.1);
-const laserShotCoreGeometry = new THREE.SphereGeometry(0.17, 18, 12);
-const laserShotTrailGeometry = new THREE.CylinderGeometry(0.035, 0.085, 0.85, 12, 1, true);
+const laserShotCoreGeometry = new THREE.SphereGeometry(0.075, 20, 14);
+const laserShotTrailGeometry = new THREE.CylinderGeometry(0.06, 0.001, 1.2, 20, 1, true);
 laserShotTrailGeometry.rotateX(Math.PI / 2);
 const laserShots = [];
 let laserShotIndex = 0;
@@ -1501,6 +1529,11 @@ const laserForwardLocal = new THREE.Vector3(0, 0, 1);
 const laserForwardBasis = new THREE.Vector3(0, 0, 1);
 const laserBeamOrigin = new THREE.Vector3();
 const laserBeamDirection = new THREE.Vector3();
+const laserAimRay = new THREE.Raycaster();
+laserAimRay.far = 96;
+const laserAimScreen = new THREE.Vector2();
+const laserAimTarget = new THREE.Vector3();
+const laserAimLocal = new THREE.Vector3();
 const rockHitOffset = new THREE.Vector3();
 const rockFragmentVelocity = new THREE.Vector3();
 let rockFragmentIndex = 0;
@@ -1509,11 +1542,23 @@ for (let i = 0; i < 34; i += 1) {
   const shot = new THREE.Group();
   const core = new THREE.Mesh(laserShotCoreGeometry, materials.laserShotCore.clone());
   const trail = new THREE.Mesh(laserShotTrailGeometry, materials.laserShot.clone());
+  const halo = new THREE.Mesh(laserShotCoreGeometry, materials.laserShot.clone());
+  core.scale.set(0.8, 0.8, 2.1);
+  halo.scale.set(1.7, 1.7, 2.8);
+  halo.material.opacity = 0;
+  trail.material.onBeforeCompile = (shader) => {
+    shader.vertexShader = `varying float vTrailFade;\n${shader.vertexShader}`.replace(
+      '#include <begin_vertex>', '#include <begin_vertex>\nvTrailFade = uv.y;',
+    );
+    shader.fragmentShader = `varying float vTrailFade;\n${shader.fragmentShader}`.replace(
+      '#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.a *= smoothstep(0.0, 0.8, vTrailFade);',
+    );
+  };
 
   core.material.opacity = 0;
   trail.material.opacity = 0;
-  trail.position.z = -0.42;
-  shot.add(core, trail);
+  trail.position.z = -0.6;
+  shot.add(core, trail, halo);
   shot.visible = false;
   shot.userData = {
     age: 0,
@@ -1521,6 +1566,7 @@ for (let i = 0; i < 34; i += 1) {
     velocity: new THREE.Vector3(),
     core,
     trail,
+    halo,
   };
   laserShots.push(shot);
   scene.add(shot);
@@ -1592,50 +1638,134 @@ for (const side of [-1, 1]) {
     laserGroup.rotation.copy(laserBaseRotation);
     glove.add(laserGroup);
 
-    const grip = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.16, 0.07), materials.laserGun);
-    grip.position.set(0.005, -0.055, -0.015);
-    grip.rotation.x = -0.42;
-    grip.castShadow = true;
-    laserGroup.add(grip);
+    const gunMetal = new THREE.MeshStandardMaterial({ color: 0x59636d, roughness: 0.38, metalness: 0.72 });
+    const gunGreen = new THREE.MeshStandardMaterial({ color: 0x527342, roughness: 0.6, metalness: 0.28 });
+    const gripRubber = new THREE.MeshStandardMaterial({ color: 0x242930, roughness: 0.92, metalness: 0.04 });
+    const barrelMetal = new THREE.MeshStandardMaterial({ color: 0x303a43, roughness: 0.3, metalness: 0.8 });
+    function gunBox(width, height, depth, x, y, z, material, bevel = 0.006) {
+      const mesh = new THREE.Mesh(new RoundedBoxGeometry(width, height, depth, 2, bevel), material);
+      mesh.position.set(x, y, z);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      laserGroup.add(mesh);
+      return mesh;
+    }
+    function gunCylinder(radius, length, z, material, innerRadius = radius) {
+      const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, innerRadius, length, 24), material);
+      mesh.position.set(0, 0.018, z);
+      mesh.rotation.x = Math.PI / 2;
+      mesh.castShadow = true;
+      laserGroup.add(mesh);
+      return mesh;
+    }
 
-    const body = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.08, 0.32), materials.laserGun);
-    body.position.set(0, 0.015, 0.095);
-    body.castShadow = true;
-    laserGroup.add(body);
+    const grip = gunBox(0.072, 0.17, 0.085, 0, -0.075, -0.005, gripRubber, 0.012);
+    grip.rotation.x = -0.32;
+    gunBox(0.085, 0.022, 0.095, 0, -0.15, -0.028, barrelMetal);
+    // Beveled receiver, separate slide and rear end cap catch the sunlight.
+    gunBox(0.13, 0.092, 0.3, 0, 0.015, 0.095, gunGreen, 0.014);
+    gunBox(0.108, 0.032, 0.27, 0, 0.068, 0.105, barrelMetal);
+    gunBox(0.112, 0.065, 0.018, 0, 0.02, -0.061, barrelMetal);
+    gunBox(0.095, 0.052, 0.12, 0, -0.04, 0.2, gripRubber);
 
-    const topRail = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.025, 0.22), materials.metalTrim);
-    topRail.position.set(0, 0.07, 0.09);
-    topRail.castShadow = true;
-    laserGroup.add(topRail);
+    // Raised grip texture, inset side panels and small fasteners.
+    for (const side of [-1, 1]) {
+      gunBox(0.008, 0.052, 0.14, side * 0.065, 0.012, 0.085, gunGreen, 0.003);
+      for (let rib = 0; rib < 6; rib += 1) {
+        if (side < 0) {
+          const texture = gunBox(0.077, 0.007, 0.068, 0, -0.045 - rib * 0.016, 0.005 - rib * 0.005, gunMetal, 0.002);
+          texture.rotation.x = -0.32;
+        }
+        gunBox(0.006, 0.035, 0.006, side * 0.071, 0.022, 0.12 + rib * 0.014, gripRubber, 0.002);
+      }
+      for (const z of [0.025, 0.14]) {
+        const screw = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.007, 0.004, 12), materials.metalTrim);
+        screw.rotation.z = Math.PI / 2;
+        screw.position.set(side * 0.072, 0.012, z);
+        laserGroup.add(screw);
+        gunBox(0.005, 0.002, 0.009, side * 0.075, 0.012, z, gripRubber, 0.0005);
+      }
+    }
+    // Open trigger guard and curved trigger below the receiver.
+    const guard = new THREE.Mesh(new THREE.TorusGeometry(0.045, 0.006, 8, 24), barrelMetal);
+    guard.rotation.y = Math.PI / 2;
+    guard.scale.set(1.15, 0.75, 1);
+    guard.position.set(0, -0.055, 0.085);
+    laserGroup.add(guard);
+    const trigger = gunBox(0.012, 0.035, 0.012, 0, -0.047, 0.075, gunMetal, 0.004);
+    trigger.rotation.x = -0.35;
 
-    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.032, 0.038, 0.34, 16), materials.laserGun);
-    barrel.position.set(0, 0.018, 0.32);
-    barrel.rotation.x = Math.PI / 2;
-    barrel.castShadow = true;
-    laserGroup.add(barrel);
+    gunCylinder(0.031, 0.28, 0.36, barrelMetal);
+    for (const z of [0.255, 0.3, 0.345, 0.39, 0.435]) {
+      gunCylinder(0.04, 0.014, z, gunMetal);
+    }
+    gunCylinder(0.045, 0.042, 0.492, barrelMetal);
+    gunCylinder(0.035, 0.006, 0.516, gripRubber);
+    const emitter = gunCylinder(0.023, 0.008, 0.522, materials.laserEmitter);
 
-    const emitter = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.032, 0.045, 16), materials.laserEmitter);
-    emitter.position.set(0, 0.018, 0.515);
-    emitter.rotation.x = Math.PI / 2;
-    emitter.castShadow = true;
-    laserGroup.add(emitter);
+    // Paired rear sight blades leave a clear notch aligned with the front post.
+    for (const side of [-1, 1]) {
+      gunBox(0.018, 0.024, 0.024, side * 0.035, 0.094, -0.018, barrelMetal, 0.003);
+      gunBox(0.006, 0.006, 0.004, side * 0.035, 0.098, -0.032, materials.laserEmitter, 0.001);
+    }
+    gunBox(0.015, 0.025, 0.025, 0, 0.087, 0.218, barrelMetal, 0.003);
+    gunBox(0.005, 0.006, 0.005, 0, 0.1, 0.207, materials.laserEmitter, 0.001);
 
-    const muzzleFlash = new THREE.Mesh(new THREE.SphereGeometry(0.085, 16, 10), materials.laserBeam.clone());
+    const muzzleFlash = new THREE.Mesh(new THREE.SphereGeometry(0.038, 24, 16), materials.laserBeam.clone());
     muzzleFlash.position.set(0, 0.018, 0.545);
     muzzleFlash.visible = false;
     laserGroup.add(muzzleFlash);
 
     const beam = new THREE.Mesh(laserBeamGeometry, materials.laserBeam.clone());
+    beam.material.blending = THREE.NormalBlending;
+    beam.material.side = THREE.DoubleSide;
+    beam.material.forceSinglePass = true;
+    beam.material.depthWrite = true;
+    const beamTime = { value: 0 };
+    // Shade inside the existing beam silhouette; no separate outer glow shell.
+    beam.material.onBeforeCompile = (shader) => {
+      shader.uniforms.laserTime = beamTime;
+      shader.vertexShader = `varying float vLaserLength;
+        varying vec3 vLaserNormal;
+        varying vec3 vLaserAxis;
+        varying vec3 vLaserView;
+        ${shader.vertexShader}`.replace('#include <project_vertex>', `
+          #include <project_vertex>
+          vLaserLength = position.z;
+          vLaserNormal = normalize(normalMatrix * normal);
+          vLaserAxis = normalize(mat3(modelViewMatrix) * vec3(0.0, 0.0, 1.0));
+          vLaserView = -mvPosition.xyz;
+        `);
+      shader.fragmentShader = `uniform float laserTime;
+        varying float vLaserLength;
+        varying vec3 vLaserNormal;
+        varying vec3 vLaserAxis;
+        varying vec3 vLaserView;
+        ${shader.fragmentShader}`.replace('#include <color_fragment>', `
+          #include <color_fragment>
+          float shimmer = 0.9 + 0.09 * sin(vLaserLength * 7.0 - laserTime * 19.0)
+            + 0.06 * sin(vLaserLength * 17.0 + laserTime * 27.0);
+          vec3 axis = normalize(vLaserAxis);
+          vec3 view = normalize(vLaserView);
+          vec3 radialView = view - axis * dot(view, axis);
+          float facing = abs(dot(normalize(vLaserNormal), radialView / max(length(radialView), 0.0001)));
+          float radialDistance = sqrt(max(0.0, 1.0 - facing * facing));
+          float narrowedFacing = sqrt(max(0.0, 1.0 - pow(radialDistance / 0.9, 2.0)));
+          float core = pow(smoothstep(0.0, 1.0, narrowedFacing), 2.0);
+          diffuseColor.rgb = mix(vec3(0.07, 0.74, 0.12), vec3(0.78, 1.0, 0.7), core) * shimmer;
+        `);
+    };
     beam.position.set(0, 0.018, 44.55);
     beam.visible = false;
     laserGroup.add(beam);
 
-    const glow = new THREE.Mesh(laserGlowGeometry, materials.laserBeam.clone());
-    glow.position.set(0, 0.018, 43.8);
-    glow.visible = false;
-    laserGroup.add(glow);
-
-    handLaser = { group: laserGroup, beam, glow, muzzleFlash, emitter };
+    handLaser = {
+      group: laserGroup, beam, muzzleFlash, emitter, beamTime,
+      parent: glove,
+      restingPosition: laserGroup.position.clone(),
+      raiseAmount: 0,
+      visibleUntil: 0,
+    };
   }
 
   const hip = new THREE.Mesh(new THREE.SphereGeometry(0.14, 16, 10), materials.suitTrim);
@@ -1794,11 +1924,6 @@ const bodyRig = {
     position: waistSeal.position.clone(),
     rotation: waistSeal.rotation.clone(),
   },
-  backpackParts: backpackAnimatedParts.map((mesh) => ({
-    mesh,
-    position: mesh.position.clone(),
-    rotation: mesh.rotation.clone(),
-  })),
   headParts: [...helmetAnimatedParts, antenna, antennaTip].map((mesh) => ({
     mesh,
     position: mesh.position.clone(),
@@ -1980,25 +2105,88 @@ function updateRockFragments(delta) {
 
 function updateLaser(delta) {
   if (!handLaser) return;
-  const targetPitch = laserBaseRotation.x + (0.5 - state.aimY) * 0.78;
-  const targetYaw = laserBaseRotation.y - (state.aimX - 0.5) * 1.28;
+  const now = performance.now();
+  if (!state.firstPerson || !state.running) handLaser.visibleUntil = 0;
+  else if (state.laserActive) handLaser.visibleUntil = now + 5000;
+  const raisingWeapon = state.firstPerson && state.running && (state.laserActive || now < handLaser.visibleUntil);
+  handLaser.raiseAmount = THREE.MathUtils.damp(
+    handLaser.raiseAmount, raisingWeapon ? 1 : 0, raisingWeapon ? 12 : 7, delta,
+  );
+  if (!state.firstPerson || !state.running || (!raisingWeapon && handLaser.raiseAmount < 0.002)) {
+    handLaser.raiseAmount = 0;
+  }
+  const firstPersonWeapon = state.firstPerson && state.running && (raisingWeapon || handLaser.raiseAmount > 0);
+  const movementSway = firstPersonWeapon
+    ? Math.min(1, Math.hypot(state.depthVelocity, state.steerVelocity))
+      * (1 - THREE.MathUtils.smoothstep(state.flightHeight, 0.02, 0.25))
+      * (state.sprinting ? 1.9 : 1)
+    : 0;
+  const weaponSway = Math.sin(state.runCycle) * movementSway;
+  const weaponBob = Math.sin(state.runCycle * 2) * movementSway;
+  const weaponParent = firstPersonWeapon ? camera : handLaser.parent;
+  if (handLaser.group.parent !== weaponParent) {
+    weaponParent.add(handLaser.group);
+    handLaser.group.position.copy(handLaser.restingPosition);
+    handLaser.group.rotation.copy(laserBaseRotation);
+    if (firstPersonWeapon) handLaser.group.rotation.set(0, Math.PI, 0);
+  }
+  if (firstPersonWeapon) {
+    setDefaultCameraPerspective();
+    camera.updateMatrixWorld(true);
+    // Keep the actual firing weapon in view, so beams and shots leave its muzzle.
+    const loweredAmount = 1 - handLaser.raiseAmount;
+    handLaser.group.position.set(0.24 + loweredAmount * 0.08, -0.2 - loweredAmount * 1.1, -0.48);
+    handLaser.group.position.x += weaponSway * 0.012;
+    handLaser.group.position.y += weaponBob * 0.009;
+  }
+  const targetPitch = firstPersonWeapon ? weaponBob * 0.003 : laserBaseRotation.x + (0.5 - state.aimY) * 0.78;
+  const targetYaw = firstPersonWeapon ? Math.PI + weaponSway * 0.004 : laserBaseRotation.y - (state.aimX - 0.5) * 1.28;
   handLaser.group.rotation.x = THREE.MathUtils.damp(handLaser.group.rotation.x, targetPitch, 14, delta);
   handLaser.group.rotation.y = THREE.MathUtils.damp(handLaser.group.rotation.y, targetYaw, 14, delta);
-  handLaser.group.rotation.z = laserBaseRotation.z;
+  handLaser.group.rotation.z = firstPersonWeapon ? weaponSway * 0.012 : laserBaseRotation.z;
 
-  const targetOpacity = state.running && state.laserActive && state.weaponMode === 'beam' ? 0.84 : 0;
+  let beamLength = 88;
+  if (!state.firstPerson && state.running && state.laserActive) {
+    setDefaultCameraPerspective();
+    camera.updateMatrixWorld(true);
+    laserAimScreen.set(state.aimX * 2 - 1, 1 - state.aimY * 2);
+    laserAimRay.setFromCamera(laserAimScreen, camera);
+    world.updateMatrixWorld(true);
+    const hits = laserAimRay.intersectObjects([...terrainTiles, ...rocks, ...mountains], true);
+    if (hits.length) laserAimTarget.copy(hits[0].point);
+    else laserAimRay.ray.at(88, laserAimTarget);
+
+    // Convert the cursor's world target into the animated hand's coordinates.
+    handLaser.group.parent.updateWorldMatrix(true, false);
+    laserAimLocal.copy(laserAimTarget);
+    handLaser.group.parent.worldToLocal(laserAimLocal);
+    laserAimLocal.sub(handLaser.group.position).normalize();
+    handLaser.group.quaternion.setFromUnitVectors(laserForwardLocal, laserAimLocal);
+    handLaser.group.updateWorldMatrix(true, false);
+    laserAimLocal.copy(laserAimTarget);
+    handLaser.group.worldToLocal(laserAimLocal);
+    laserAimLocal.sub(new THREE.Vector3(0, 0.018, 0.55));
+    beamLength = Math.max(0.01, laserAimLocal.length());
+  }
+
+  const targetOpacity = state.running && state.laserActive && state.weaponMode === 'beam' ? 0.98 : 0;
   const currentOpacity = handLaser.beam.material.opacity;
   const nextOpacity = THREE.MathUtils.damp(currentOpacity, targetOpacity, 24, delta);
   const pulse = targetOpacity > 0 ? 0.82 + Math.sin(clock.elapsedTime * 32) * 0.18 : 0;
 
   handLaser.beam.visible = nextOpacity > 0.02;
-  handLaser.glow.visible = nextOpacity > 0.02;
   handLaser.muzzleFlash.visible = nextOpacity > 0.02;
-  handLaser.beam.material.opacity = nextOpacity * pulse;
-  handLaser.glow.material.opacity = nextOpacity * 0.32 * pulse;
+  handLaser.beam.material.opacity = nextOpacity;
+  handLaser.beamTime.value = clock.elapsedTime;
   handLaser.muzzleFlash.material.opacity = nextOpacity * 0.72 * pulse;
-  handLaser.beam.scale.set(1 + pulse * 0.18, 1, 1);
-  handLaser.glow.scale.set(1 + pulse * 0.14, 1, 1);
+  handLaser.beam.scale.set(1, 1, beamLength / 88);
+  handLaser.beam.quaternion.identity();
+  handLaser.beam.position.set(0, 0.018, 0.55 + beamLength / 2);
+  if (!state.firstPerson && state.running && state.laserActive) {
+    laserAimLocal.normalize();
+    handLaser.beam.quaternion.setFromUnitVectors(laserForwardLocal, laserAimLocal);
+    handLaser.beam.position.set(0, 0.018, 0.55).addScaledVector(laserAimLocal, beamLength / 2);
+  }
   handLaser.muzzleFlash.scale.setScalar(0.78 + pulse * 0.45);
   handLaser.emitter.material.emissiveIntensity = 1.5 + nextOpacity * 3.8 + (state.weaponMode === 'shots' && state.laserActive ? 1.4 : 0);
 
@@ -2010,6 +2198,7 @@ function updateLaser(delta) {
     handLaser.group.updateMatrixWorld(true);
     handLaser.group.localToWorld(laserBeamOrigin.set(0, 0.018, 0.58));
     laserBeamDirection.copy(laserForwardLocal).transformDirection(handLaser.group.matrixWorld).normalize();
+    if (!state.firstPerson) laserBeamDirection.copy(laserAimTarget).sub(laserBeamOrigin).normalize();
     const rock = findRockHitByRay(laserBeamOrigin, laserBeamDirection, 96);
     if (rock) {
       shatterRock(rock, rock.position);
@@ -2023,7 +2212,7 @@ function emitLaserShot() {
   handLaser.group.updateMatrixWorld(true);
   handLaser.group.localToWorld(laserMuzzleWorld.set(0, 0.018, 0.58));
   laserShotDirection.copy(laserForwardLocal).transformDirection(handLaser.group.matrixWorld).normalize();
-  laserShotDirection.y = Math.max(laserShotDirection.y, 0.035);
+  if (!state.firstPerson) laserShotDirection.copy(laserAimTarget).sub(laserMuzzleWorld).normalize();
   laserShotDirection.normalize();
 
   const shot = laserShots[laserShotIndex];
@@ -2036,6 +2225,7 @@ function emitLaserShot() {
   shot.userData.velocity.copy(laserShotDirection).multiplyScalar(34);
   shot.userData.core.material.opacity = 1;
   shot.userData.trail.material.opacity = 0.58;
+  shot.userData.halo.material.opacity = 0.18;
   shot.scale.setScalar(1);
 }
 
@@ -2057,9 +2247,11 @@ function updateLaserShots(delta) {
     shot.position.addScaledVector(shot.userData.velocity, delta);
     laserShotTarget.copy(shot.userData.velocity).normalize();
     shot.quaternion.setFromUnitVectors(laserForwardBasis, laserShotTarget);
-    shot.scale.setScalar(1 + progress * 0.55);
-    shot.userData.core.material.opacity = 1 * (1 - progress);
-    shot.userData.trail.material.opacity = 0.58 * (1 - progress);
+    const fade = 1 - THREE.MathUtils.smoothstep(progress, 0.65, 1);
+    const pulse = 0.94 + Math.sin(shot.userData.age * 48) * 0.06;
+    shot.userData.core.material.opacity = fade;
+    shot.userData.trail.material.opacity = 0.6 * fade * pulse;
+    shot.userData.halo.material.opacity = 0.18 * fade * pulse;
     const rock = findRockHitByPoint(shot.position, 0.42);
     if (rock) {
       shatterRock(rock, rock.position);
@@ -2162,6 +2354,7 @@ const clock = new THREE.Clock();
 
 function resetGame() {
   state.running = true;
+  document.querySelector('#app').classList.add('is-playing');
   state.score = 0;
   state.speed = 13.5;
   state.elapsed = 0;
@@ -2203,6 +2396,7 @@ function resetGame() {
 
 function gameOver() {
   state.running = false;
+  document.querySelector('#app').classList.remove('is-playing');
   state.best = Math.max(state.best, Math.floor(state.score));
   localStorage.setItem('orbital-drift-best', String(state.best));
   overlayTitle.textContent = 'Run ended';
@@ -2266,6 +2460,24 @@ function updateJetpack(delta) {
 }
 
 function setDefaultCameraPerspective() {
+  for (const part of bodyRig.headParts) {
+    part.mesh.visible = !state.firstPerson;
+  }
+  if (state.firstPerson) {
+    const forwardX = Math.sin(state.faceYaw);
+    const forwardZ = Math.cos(state.faceYaw);
+    camera.position.set(
+      ship.position.x + forwardX * 0.48,
+      ship.position.y + 1.25,
+      ship.position.z + forwardZ * 0.48,
+    );
+    camera.lookAt(
+      camera.position.x + forwardX * Math.cos(state.cameraPitch),
+      camera.position.y + Math.sin(state.cameraPitch),
+      camera.position.z + forwardZ * Math.cos(state.cameraPitch),
+    );
+    return;
+  }
   const isStandingStill = isPlayerStandingStill();
   const cameraYaw = isStandingStill ? state.cameraOrbitYaw : state.faceYaw;
   const followDistance = innerWidth < 720 ? 14.5 : 12;
@@ -2307,20 +2519,20 @@ function updateMovementInputs() {
 
 function moveWithMouse(event) {
   updateAimFromPointer(event);
-  if (state.laserActive) return;
+  if (state.laserActive && !state.firstPerson) return;
   if (!state.running || event.pointerType === 'touch') return;
   const movementX = event.movementX || 0;
   const movementY = event.movementY || 0;
   if (Math.abs(movementX) + Math.abs(movementY) < 0.5) return;
 
   const isStandingStill = isPlayerStandingStill();
-  if (isStandingStill) {
+  if (isStandingStill && !state.firstPerson) {
     state.cameraOrbitYaw -= movementX * 0.006;
   } else {
     state.faceYaw -= movementX * 0.006;
     state.cameraOrbitYaw = state.faceYaw;
   }
-  if (isStandingStill) {
+  if (isStandingStill || state.firstPerson) {
     state.cameraPitch = THREE.MathUtils.clamp(state.cameraPitch - movementY * 0.0045, -0.55, 1.05);
   }
   state.mouseSteer = 0;
@@ -2336,13 +2548,24 @@ function setTouchSteer(direction) {
 
 function updateAimFromPointer(event) {
   if (event.pointerType === 'touch') return;
+  if (document.pointerLockElement === canvas) {
+    state.aimX = 0.5;
+    state.aimY = 0.5;
+    return;
+  }
   state.aimX = THREE.MathUtils.clamp(event.clientX / Math.max(1, innerWidth), 0, 1);
   state.aimY = THREE.MathUtils.clamp(event.clientY / Math.max(1, innerHeight), 0, 1);
 }
 
 function setLaserActive(event, active) {
   if (event.button !== 0 || event.pointerType === 'touch') return;
+  if (active && state.running && state.firstPerson && event.target === canvas) {
+    captureFirstPersonMouse();
+  }
   updateAimFromPointer(event);
+  if (!active && state.laserActive && state.firstPerson && handLaser) {
+    handLaser.visibleUntil = performance.now() + 5000;
+  }
   state.laserActive = active && state.running;
   if (state.laserActive && isPlayerStandingStill()) {
     state.faceYaw = state.cameraOrbitYaw;
@@ -2491,14 +2714,9 @@ function updateRunAnimation(delta, movementAmount, movementDirection, sprintAmou
   bodyRig.waistSeal.mesh.rotation.y += bodySway * 0.045;
   bodyRig.waistSeal.mesh.rotation.z += steeringLean * 0.45;
 
-  for (const part of bodyRig.backpackParts) {
-    part.mesh.position.copy(part.position);
-    part.mesh.position.y += bodyRise * 0.018 + flightAmount * 0.035;
-    part.mesh.position.z -= flightAmount * 0.06 + sprintLean * 0.075;
-    part.mesh.rotation.copy(part.rotation);
-    part.mesh.rotation.x += sprintLean * 0.32 - flightAmount * 0.16;
-    part.mesh.rotation.z += bodySway * -0.025 + steeringLean * 0.6;
-  }
+  // The jetpack follows the back as a rigid assembly, including tanks and nozzles.
+  backpackRig.position.copy(bodyRig.torso.mesh.position);
+  backpackRig.rotation.copy(bodyRig.torso.mesh.rotation);
 
   for (const part of bodyRig.headParts) {
     part.mesh.position.copy(part.position);
@@ -2692,7 +2910,9 @@ function updateGame(delta) {
   const sprintAmount = state.sprinting && state.depthVelocity > 0.12 ? 1 : 0;
   const isMoving = movementAmount > 0.001;
   if (isMoving) {
-    state.cameraPitch = THREE.MathUtils.damp(state.cameraPitch, 0, 8, delta);
+    if (!state.firstPerson) {
+      state.cameraPitch = THREE.MathUtils.damp(state.cameraPitch, 0, 8, delta);
+    }
     state.cameraOrbitYaw = state.faceYaw;
   }
   updateJetpack(delta);
@@ -2752,7 +2972,7 @@ function updateGame(delta) {
   }
 
   for (const cloud of clouds) {
-    cloud.position.x += delta * 0.22;
+    cloud.position.x += delta * (0.12 + cloud.userData.speedFactor * 3);
     if (Math.abs(cloud.position.x - ship.position.x) > 350 || Math.abs(cloud.position.z - ship.position.z) > 350) {
       placeCloudAround(cloud, ship.position.x, ship.position.z, 320);
     }
@@ -2769,10 +2989,30 @@ function resize() {
   camera.updateProjectionMatrix();
 }
 
+function updateFirstPersonCrosshair() {
+  firstPersonCrosshair.hidden = !state.running || !state.firstPerson;
+  if (firstPersonCrosshair.hidden) return;
+  let x = innerWidth / 2;
+  let y = innerHeight / 2;
+  if (state.laserActive && handLaser) {
+    handLaser.beam.updateWorldMatrix(true, false);
+    crosshairPosition.set(0, 0, 44);
+    handLaser.beam.localToWorld(crosshairPosition);
+    camera.updateMatrixWorld(true);
+    crosshairPosition.project(camera);
+    firstPersonCrosshair.hidden = crosshairPosition.z < -1 || crosshairPosition.z > 1;
+    x = (crosshairPosition.x * 0.5 + 0.5) * innerWidth;
+    y = (0.5 - crosshairPosition.y * 0.5) * innerHeight;
+  }
+  firstPersonCrosshair.style.left = `${x}px`;
+  firstPersonCrosshair.style.top = `${y}px`;
+}
+
 function animate() {
   const delta = Math.min(clock.getDelta(), 0.04);
   updateGame(delta);
   setDefaultCameraPerspective();
+  updateFirstPersonCrosshair();
   skyDome.position.copy(camera.position);
   updateSunAndKeyLight();
   renderer.render(scene, camera);
@@ -2780,7 +3020,21 @@ function animate() {
 }
 
 window.addEventListener('resize', resize);
-window.addEventListener('pointermove', moveWithMouse);
+function captureFirstPersonMouse() {
+  if (document.pointerLockElement === canvas || !canvas.requestPointerLock) return;
+  const request = canvas.requestPointerLock();
+  request?.catch(() => {});
+}
+
+window.addEventListener('pointermove', (event) => {
+  if (document.pointerLockElement !== canvas) moveWithMouse(event);
+});
+window.addEventListener('mousemove', (event) => {
+  if (document.pointerLockElement === canvas) moveWithMouse(event);
+});
+document.addEventListener('pointerlockchange', () => {
+  if (document.pointerLockElement !== canvas) state.laserActive = false;
+});
 window.addEventListener('pointerdown', (event) => setLaserActive(event, true));
 window.addEventListener('pointerup', (event) => setLaserActive(event, false));
 window.addEventListener('pointercancel', (event) => setLaserActive(event, false));
@@ -2791,6 +3045,17 @@ window.addEventListener('blur', () => {
 });
 window.addEventListener('keydown', (event) => {
   const key = event.code === 'Space' ? 'space' : event.key.toLowerCase();
+  if (key === 'p' && !event.repeat) {
+    if (!state.firstPerson && isPlayerStandingStill()) {
+      state.faceYaw = state.cameraOrbitYaw;
+    }
+    state.firstPerson = !state.firstPerson;
+    if (state.firstPerson && state.running) captureFirstPersonMouse();
+    else if (document.pointerLockElement === canvas) document.exitPointerLock();
+    document.querySelector('#app').classList.toggle('is-first-person', state.firstPerson);
+    state.cameraOrbitYaw = state.faceYaw;
+    setDefaultCameraPerspective();
+  }
   if (key === 'space') {
     event.preventDefault();
   }
