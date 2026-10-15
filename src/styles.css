@@ -38,6 +38,32 @@ button {
   cursor: none;
 }
 
+#rock-progress {
+  position: fixed;
+  left: 50%;
+  top: 60%;
+  transform: translate(-50%, -100%);
+  width: 104px;
+  padding: 5px 7px;
+  border-radius: 5px;
+  background: rgba(25, 31, 23, 0.85);
+  color: #f3fff0;
+  font-size: 11px;
+  text-align: center;
+  pointer-events: none;
+  z-index: 4;
+}
+
+#rock-progress > span { display: none; }
+#rock-time { display: block; }
+#rock-damage {
+  display: block;
+  width: 100%;
+  height: 5px;
+  margin-top: 4px;
+  accent-color: #75e76d;
+}
+
 #first-person-crosshair {
   position: fixed;
   left: 50%;
@@ -307,3 +333,36 @@ button {
     transition: none;
   }
 }
+
+#inventory {
+  width: min(1100px, calc(100vw - 40px));
+  height: min(800px, calc(100dvh - 40px));
+  overflow-y: auto;
+  max-height: calc(100dvh - 32px);
+  padding: 28px;
+  color: #f5e7d5;
+  background: #241e1a;
+  border: 1px solid #86664b;
+  border-radius: 18px;
+  box-shadow: 0 24px 90px #0009;
+  cursor: auto;
+}
+#inventory::backdrop { background: #100c09b8; backdrop-filter: blur(5px); }
+.inventory-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.inventory-heading h2 { margin: 0; font-size: 28px; }
+#inventory-close { background: #ffffff0c; color: inherit; border: 1px solid #86664b; border-radius: 8px; padding: 8px 12px; cursor: pointer; }
+.inventory-label, .inventory-hint { color: #bba58e; font-size: 13px; }
+.inventory-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 16px; margin: 24px 0; }
+.inventory-slot { min-height: 140px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; border: 1px solid #73583f; border-radius: 10px; background: #372b21; }
+.item-symbol { font-size: 28px; color: #b4e889; }
+.inventory-slot small { color: #bba58e; font-size: 11px; }
+.inventory-slot.empty { border-style: dashed; background: #ffffff03; color: #8b7969; font-size: 12px; }
+.inventory-hint { margin-bottom: 0; }
+@media (max-width: 400px) { .inventory-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+@media (max-width: 850px) { .inventory-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@media (max-width: 550px) { .inventory-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } #inventory { padding: 20px; } }
+
+.stone-symbol { color: #c4a38a; text-shadow: 3px 3px 0 #705640; }
+
+.stone-thumbnail { width: 96px; height: 72px; object-fit: contain; filter: drop-shadow(0 5px 4px #0006); }

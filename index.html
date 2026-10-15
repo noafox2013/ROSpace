@@ -9,6 +9,11 @@
     <div id="app">
       <canvas id="game-canvas" aria-label="Rust Mesa 3D game"></canvas>
       <div id="first-person-crosshair" aria-hidden="true" hidden></div>
+      <div id="rock-progress" hidden>
+        <span>Stein zerstören</span>
+        <strong id="rock-time"></strong>
+        <progress id="rock-damage" max="1.5" value="0" aria-label="Fortschritt der Steinzerstörung"></progress>
+      </div>
 
       <section class="hud" aria-live="polite">
         <div class="brand">
@@ -32,6 +37,41 @@
         <p id="overlay-copy">Roam across rust-red terrain, dry grass, weathered rocks, low hills, and eroded desert washes.</p>
         <button id="start-button" type="button">Start run</button>
       </section>
+
+      <dialog id="inventory" aria-labelledby="inventory-title">
+        <div class="inventory-heading">
+          <h2 id="inventory-title">Inventar</h2>
+          <button id="inventory-close" type="button" aria-label="Inventar schließen">✕</button>
+        </div>
+        <p class="inventory-label">Deine Ausrüstung</p>
+        <div class="inventory-grid">
+          <div class="inventory-slot"><span class="item-symbol">↗</span><strong>Laser</strong><small>Ausgerüstet</small></div>
+          <div class="inventory-slot"><span class="item-symbol">↑↑</span><strong>Jetpack</strong><small>Ausgerüstet</small></div>
+          <div class="inventory-slot empty" id="inventory-stone" aria-live="polite">Leer</div>
+          <div class="inventory-slot empty" id="inventory-crystal" aria-live="polite">Leer</div>
+          <div class="inventory-slot empty">Leer</div>
+          <div class="inventory-slot empty">Leer</div>
+          <div class="inventory-slot empty">Leer</div>
+          <div class="inventory-slot empty">Leer</div>
+          <div class="inventory-slot empty">Leer</div>
+          <div class="inventory-slot empty">Leer</div>
+          <div class="inventory-slot empty">Leer</div>
+          <div class="inventory-slot empty">Leer</div>
+          <div class="inventory-slot empty">Leer</div>
+          <div class="inventory-slot empty">Leer</div>
+          <div class="inventory-slot empty">Leer</div>
+          <div class="inventory-slot empty">Leer</div>
+          <div class="inventory-slot empty">Leer</div>
+          <div class="inventory-slot empty">Leer</div>
+          <div class="inventory-slot empty">Leer</div>
+          <div class="inventory-slot empty">Leer</div>
+          <div class="inventory-slot empty">Leer</div>
+          <div class="inventory-slot empty">Leer</div>
+          <div class="inventory-slot empty">Leer</div>
+          <div class="inventory-slot empty">Leer</div>
+        </div>
+        <p class="inventory-hint">E oder Esc zum Schließen · Spiel pausiert</p>
+      </dialog>
 
       <div class="controls" aria-hidden="true">
         <button class="control" id="left-control" type="button">‹</button>
