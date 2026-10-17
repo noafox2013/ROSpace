@@ -36,41 +36,46 @@
         <h1 id="overlay-title">Rust Mesa</h1>
         <p id="overlay-copy">Roam across rust-red terrain, dry grass, weathered rocks, low hills, and eroded desert washes.</p>
         <button id="start-button" type="button">Start run</button>
+        <button id="load-button" type="button" hidden>Spielstand laden</button>
       </section>
+
+      <dialog id="pause-menu" aria-labelledby="pause-title">
+        <h2 id="pause-title">Spiel pausiert</h2>
+        <button id="resume-button" type="button">Weiterspielen</button>
+        <label for="save-name">Name des Spielstands</label>
+        <input id="save-name" type="text" maxlength="60" value="Mein Spielstand" autocomplete="off" />
+        <button id="save-button" type="button">Spiel speichern</button>
+        <button id="quit-button" type="button">Spiel beenden</button>
+        <p id="save-message" role="status">Spielstände werden in diesem Browser gespeichert.</p>
+      </dialog>
 
       <dialog id="inventory" aria-labelledby="inventory-title">
         <div class="inventory-heading">
-          <h2 id="inventory-title">Inventar</h2>
+          <div><p class="inventory-eyebrow">Rust Mesa · Expedition</p><h2 id="inventory-title">Dein Inventar</h2></div>
           <button id="inventory-close" type="button" aria-label="Inventar schließen">✕</button>
         </div>
-        <p class="inventory-label">Deine Ausrüstung</p>
-        <div class="inventory-grid">
-          <div class="inventory-slot"><span class="item-symbol">↗</span><strong>Laser</strong><small>Ausgerüstet</small></div>
-          <div class="inventory-slot"><span class="item-symbol">↑↑</span><strong>Jetpack</strong><small>Ausgerüstet</small></div>
-          <div class="inventory-slot empty" id="inventory-stone" aria-live="polite">Leer</div>
-          <div class="inventory-slot empty" id="inventory-crystal" aria-live="polite">Leer</div>
-          <div class="inventory-slot empty">Leer</div>
-          <div class="inventory-slot empty">Leer</div>
-          <div class="inventory-slot empty">Leer</div>
-          <div class="inventory-slot empty">Leer</div>
-          <div class="inventory-slot empty">Leer</div>
-          <div class="inventory-slot empty">Leer</div>
-          <div class="inventory-slot empty">Leer</div>
-          <div class="inventory-slot empty">Leer</div>
-          <div class="inventory-slot empty">Leer</div>
-          <div class="inventory-slot empty">Leer</div>
-          <div class="inventory-slot empty">Leer</div>
-          <div class="inventory-slot empty">Leer</div>
-          <div class="inventory-slot empty">Leer</div>
-          <div class="inventory-slot empty">Leer</div>
-          <div class="inventory-slot empty">Leer</div>
-          <div class="inventory-slot empty">Leer</div>
-          <div class="inventory-slot empty">Leer</div>
-          <div class="inventory-slot empty">Leer</div>
-          <div class="inventory-slot empty">Leer</div>
-          <div class="inventory-slot empty">Leer</div>
-        </div>
-        <p class="inventory-hint">E oder Esc zum Schließen · Spiel pausiert</p>
+        <p class="inventory-intro">Alles, was du bei deiner Erkundung dabei hast.</p>
+        <section aria-labelledby="equipment-title">
+          <h3 class="inventory-label" id="equipment-title">Ausrüstung <span>2 ausgerüstet</span></h3>
+          <div class="equipment-grid">
+            <article class="equipment-card">
+              <div class="equipment-icon" aria-hidden="true"><svg viewBox="0 0 64 64" fill="none"><path d="M12 24h34v15H30l-5 14H14l5-14h-7z" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/><path d="M46 28h8v7h-8M20 23v-5h18v5M54 31h7" stroke="currentColor" stroke-width="3"/><path d="M18 29h16" stroke="currentColor" stroke-width="2"/></svg></div>
+              <div><span class="equipment-badge">Ausgerüstet</span><h4>Laser</h4><p>Baue Steine und Kristalle ab.</p><small>Linke Maustaste · G wechselt den Modus</small></div>
+            </article>
+            <article class="equipment-card">
+              <div class="equipment-icon" aria-hidden="true"><svg viewBox="0 0 64 64" fill="none"><rect x="15" y="12" width="34" height="31" rx="6" stroke="currentColor" stroke-width="3"/><path d="M24 19v16m16-16v16M18 43l-2 7h12l-2-7m12 0-2 7h12l-2-7M21 54v6m22-6v6M29 6h6v6" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg></div>
+              <div><span class="equipment-badge">Ausgerüstet</span><h4>Jetpack</h4><p>Erreiche neue Höhen.</p><small>Leertaste halten zum Fliegen</small></div>
+            </article>
+          </div>
+        </section>
+        <section aria-labelledby="resources-title">
+          <h3 class="inventory-label" id="resources-title">Rohstoffe <span id="inventory-total">0 gesammelt</span></h3>
+          <div class="inventory-grid">
+            <article class="inventory-slot empty" id="inventory-stone" aria-live="polite"></article>
+            <article class="inventory-slot empty" id="inventory-crystal" aria-live="polite"></article>
+          </div>
+        </section>
+        <p class="inventory-hint"><span>Spiel pausiert</span><span><kbd>E</kbd> oder <kbd>Esc</kbd> zum Schließen</span></p>
       </dialog>
 
       <div class="controls" aria-hidden="true">

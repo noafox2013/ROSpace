@@ -1,9 +1,9 @@
 import './styles.css';
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { createSandworm } from './sandworm.js';
 
 const canvas = document.querySelector('#game-canvas');
-const crosshairPosition = new THREE.Vector3();
 const firstPersonCrosshair = document.querySelector('#first-person-crosshair');
 const rockProgress = document.querySelector('#rock-progress');
 const rockTime = document.querySelector('#rock-time');
@@ -24,6 +24,93 @@ const startButton = document.querySelector('#start-button');
 const leftControl = document.querySelector('#left-control');
 const rightControl = document.querySelector('#right-control');
 const inventory = document.querySelector('#inventory');
+const pauseMenu = document.querySelector('#pause-menu');
+const loadButton = document.querySelector('#load-button');
+const saveMessage = document.querySelector('#save-message');
+const saveNameInput = document.querySelector('#save-name');
+const saveKey = 'rust-mesa-save-v1';
+let pausedAt = null;
+
+function openPauseMenu() {
+  if (!state.running || pauseMenu.open) return;
+  pausedAt = performance.now();
+  state.laserActive = false;
+  state.jetpackActive = false;
+  state.mouseSteer = 0;
+  state.mouseDepth = 0;
+  state.mouseMoveUntil = 0;
+  activeKeys.clear();
+  updateMovementInputs();
+  pauseMenu.showModal();
+  if (document.pointerLockElement === canvas) document.exitPointerLock();
+}
+
+function refreshLoadButton() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(saveKey));
+    loadButton.hidden = !saved;
+    const name = typeof saved?.name === 'string' ? saved.name : 'Mein Spielstand';
+    loadButton.textContent = `Spielstand laden: ${name}`;
+  }
+  catch { loadButton.hidden = true; }
+}
+
+function saveGame() {
+  try {
+    const name = saveNameInput.value.trim().slice(0, 60) || 'Mein Spielstand';
+    saveNameInput.value = name;
+    const savedState = {};
+    for (const key of ['score', 'stones', 'crystals', 'elapsed', 'flightHeight', 'flightVelocity',
+      'faceYaw', 'cameraOrbitYaw', 'cameraPitch', 'firstPerson', 'weaponMode']) savedState[key] = state[key];
+    localStorage.setItem(saveKey, JSON.stringify({
+      version: 1,
+      name,
+      state: savedState,
+      position: ship.position.toArray(),
+      dayElapsed: ((pausedAt ?? performance.now()) - dayStartedAt) / 1000,
+      rocks: rocks.map((rock) => ({ position: rock.position.toArray(), damage: rock.userData.laserDamage || 0 })),
+    }));
+    refreshLoadButton();
+    saveMessage.textContent = 'Spiel gespeichert.';
+    return true;
+  } catch {
+    saveMessage.textContent = 'Speichern fehlgeschlagen. Bitte erlaube dem Browser das Speichern lokaler Daten.';
+    return false;
+  }
+}
+
+function loadGame() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(saveKey));
+    if (saved?.version !== 1 || !saved.state || !Array.isArray(saved.position)
+      || saved.position.length !== 3 || !saved.position.every(Number.isFinite)
+      || !Number.isFinite(saved.dayElapsed)) throw new Error('Invalid save');
+    resetGame();
+    saveNameInput.value = typeof saved.name === 'string' ? saved.name.slice(0, 60) : 'Mein Spielstand';
+    for (const key of ['score', 'stones', 'crystals', 'elapsed', 'flightHeight', 'flightVelocity',
+      'faceYaw', 'cameraOrbitYaw', 'cameraPitch']) {
+      if (Number.isFinite(saved.state[key])) state[key] = saved.state[key];
+    }
+    state.firstPerson = saved.state.firstPerson === true;
+    state.weaponMode = saved.state.weaponMode === 'shots' ? 'shots' : 'beam';
+    ship.position.fromArray(saved.position);
+    ship.rotation.y = state.faceYaw;
+    dayStartedAt = performance.now() - saved.dayElapsed * 1000;
+    updateTerrainAroundPlayer();
+    resetSceneryAroundPlayer();
+    saved.rocks?.forEach((entry, index) => {
+      if (rocks[index] && Array.isArray(entry.position) && entry.position.every(Number.isFinite)) {
+        rocks[index].position.fromArray(entry.position);
+        rocks[index].userData.laserDamage = Number.isFinite(entry.damage) ? entry.damage : 0;
+      }
+    });
+    updateInventoryResources();
+    document.querySelector('#app').classList.toggle('is-first-person', state.firstPerson);
+    updateHud();
+  } catch {
+    overlayCopy.textContent = 'Dieser Spielstand konnte nicht geladen werden.';
+  }
+}
 
 const playerMovement = {
   startZ: 2.15,
@@ -67,6 +154,8 @@ const state = {
   cameraPitch: 0,
   firstPerson: false,
   runCycle: 0,
+  gaitBlend: 0,
+  sprintBlend: 0,
 };
 const activeKeys = new Set();
 const playerGroundOffset = 1.0;
@@ -139,7 +228,7 @@ renderer.toneMappingExposure = 0.92;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xa7bfca);
-scene.fog = new THREE.Fog(0xb7a89f, 175, 460);
+scene.fog = new THREE.Fog(0xb7a89f, 300, 1100);
 
 const camera = new THREE.PerspectiveCamera(62, 1, 0.1, 720);
 scene.add(camera);
@@ -147,7 +236,28 @@ camera.position.set(0, 4.7, 12);
 camera.lookAt(0, 0.2, -24);
 
 const sunDirection = new THREE.Vector3(0.14, 0.72, -0.68).normalize();
-const sunDistance = 122;
+// Twelve real minutes per cycle: seven minutes of daylight and five of night.
+const dayDuration = 720;
+const nightDuration = 300;
+const daylightDuration = dayDuration - nightDuration;
+const initialSunAngle = 0;
+let dayStartedAt = performance.now();
+const sunHorizontalDirection = new THREE.Vector3(sunDirection.x, 0, sunDirection.z).normalize();
+const daylightColors = {
+  nightSky: new THREE.Color(0x101c38),
+  nightAmbient: new THREE.Color(0x8499bd),
+  nightCloud: new THREE.Color(0x293449),
+  dayCloud: new THREE.Color(0xffffff),
+  twilightCloud: new THREE.Color(0xe9a08c),
+  daySky: new THREE.Color(0x96b8c8),
+  nightHorizon: new THREE.Color(0x29334b),
+  dayHorizon: new THREE.Color(0xc6b5aa),
+  sunset: new THREE.Color(0xe99261),
+  nightGround: new THREE.Color(0x292639),
+  dayGround: new THREE.Color(0xba8165),
+  warmSun: new THREE.Color(0xff8545),
+  noonSun: new THREE.Color(0xffefd2),
+};
 const keyLightDistance = 76;
 
 const hemi = new THREE.HemisphereLight(0xc7dbe5, 0x6b3d2b, 1.65);
@@ -162,7 +272,7 @@ keyLight.shadow.normalBias = 0.035;
 keyLight.shadow.radius = 3.2;
 keyLight.shadow.camera.near = 0.5;
 // Include the ground beneath the player even at the jetpack's maximum height.
-keyLight.shadow.camera.far = keyLightDistance + playerMovement.jetpackMaxHeight / sunDirection.y + 16;
+keyLight.shadow.camera.far = keyLightDistance + 48;
 keyLight.shadow.camera.left = -32;
 keyLight.shadow.camera.right = 32;
 keyLight.shadow.camera.top = 32;
@@ -174,14 +284,81 @@ const accentLight = new THREE.PointLight(0xffa067, 9, 36);
 accentLight.position.set(8, 5, -14);
 scene.add(accentLight);
 
+const skyDome = new THREE.Mesh(
+  new THREE.SphereGeometry(145, 32, 16),
+  new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    depthWrite: false,
+    uniforms: {
+      topColor: { value: new THREE.Color(0x96b8c8) },
+      horizonColor: { value: new THREE.Color(0xc6b5aa) },
+      groundGlow: { value: new THREE.Color(0xba8165) },
+      nightStrength: { value: 0 },
+      starTime: { value: 0 },
+      sunDirection: { value: sunDirection },
+      dawnStrength: { value: 0 },
+    },
+    vertexShader: `
+      varying vec3 vLocalPosition;
+      void main() {
+        vLocalPosition = position;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vLocalPosition;
+      uniform vec3 topColor;
+      uniform vec3 horizonColor;
+      uniform vec3 groundGlow;
+      uniform float nightStrength;
+      uniform float starTime;
+      uniform vec3 sunDirection;
+      uniform float dawnStrength;
+      float starHash(vec2 cell) {
+        return fract(sin(dot(cell, vec2(127.1, 311.7))) * 43758.5453);
+      }
+      void main() {
+        vec3 direction = normalize(vLocalPosition);
+        float h = direction.y;
+        vec3 sky = mix(horizonColor, topColor, smoothstep(0.05, 0.86, h));
+        sky = mix(groundGlow, sky, smoothstep(-0.18, 0.18, h));
+        float sunAlignment = clamp(dot(direction, sunDirection), -1.0, 1.0);
+        float sunAngle = acos(sunAlignment);
+        float dawnGlow = exp(-sunAngle * sunAngle / 0.24)
+          * exp(-abs(h) * 6.0) * dawnStrength;
+        sky += vec3(0.95, 0.23, 0.055) * dawnGlow * 0.65;
+        // Fixed celestial coordinates keep the stars stable while the player walks.
+        vec2 starGrid = vec2(
+          atan(direction.z, direction.x) / 6.2831853 + 0.5,
+          asin(clamp(h, -1.0, 1.0)) / 3.1415927 + 0.5
+        ) * vec2(180.0, 90.0);
+        vec2 cell = floor(starGrid);
+        float seed = starHash(cell);
+        vec2 center = vec2(starHash(cell + 17.0), starHash(cell + 43.0)) * 0.6 + 0.2;
+        float distanceToStar = length(fract(starGrid) - center);
+        float radius = mix(0.045, 0.12, starHash(cell + 71.0));
+        float core = 1.0 - smoothstep(radius * 0.2, radius, distanceToStar);
+        float glow = exp(-distanceToStar * distanceToStar / (radius * radius * 3.0)) * 0.22;
+        float twinkle = 0.78 + 0.22 * sin(starTime * (0.8 + seed) + seed * 90.0);
+        float stars = (core + glow) * step(0.94, seed) * twinkle
+          * smoothstep(0.02, 0.2, h) * nightStrength;
+        vec3 starColor = mix(vec3(0.65, 0.8, 1.0), vec3(1.0, 0.9, 0.7), starHash(cell + 91.0));
+        sky += starColor * stars * 2.5;
+        gl_FragColor = vec4(sky, 1.0);
+      }
+    `,
+  }),
+);
+skyDome.frustumCulled = false;
+scene.add(skyDome);
+
 function createSunTexture() {
   const size = 512;
   const center = size / 2;
-  const canvasTexture = document.createElement('canvas');
-  canvasTexture.width = size;
-  canvasTexture.height = size;
-
-  const context = canvasTexture.getContext('2d');
+  const textureCanvas = document.createElement('canvas');
+  textureCanvas.width = size;
+  textureCanvas.height = size;
+  const context = textureCanvas.getContext('2d');
   const halo = context.createRadialGradient(center, center, 0, center, center, center);
   halo.addColorStop(0, 'rgba(255, 249, 205, 1)');
   halo.addColorStop(0.1, 'rgba(255, 224, 117, 0.98)');
@@ -191,12 +368,11 @@ function createSunTexture() {
   halo.addColorStop(1, 'rgba(255, 154, 69, 0)');
   context.fillStyle = halo;
   context.fillRect(0, 0, size, size);
-
   context.save();
   context.translate(center, center);
   context.globalCompositeOperation = 'screen';
   for (let i = 0; i < 28; i += 1) {
-    const angle = (i / 28) * Math.PI * 2;
+    const angle = i / 28 * Math.PI * 2;
     const length = 124 + (i % 4) * 18;
     const inner = 46 + (i % 3) * 4;
     context.rotate(angle);
@@ -213,7 +389,6 @@ function createSunTexture() {
     context.rotate(-angle);
   }
   context.restore();
-
   const core = context.createRadialGradient(center - 10, center - 12, 0, center, center, 78);
   core.addColorStop(0, 'rgba(255, 255, 242, 1)');
   core.addColorStop(0.32, 'rgba(255, 228, 118, 1)');
@@ -224,67 +399,70 @@ function createSunTexture() {
   context.beginPath();
   context.arc(center, center, 82, 0, Math.PI * 2);
   context.fill();
-
-  const texture = new THREE.CanvasTexture(canvasTexture);
+  const texture = new THREE.CanvasTexture(textureCanvas);
   texture.colorSpace = THREE.SRGBColorSpace;
-  texture.needsUpdate = true;
   return texture;
 }
 
-const skyDome = new THREE.Mesh(
-  new THREE.SphereGeometry(145, 32, 16),
-  new THREE.ShaderMaterial({
-    side: THREE.BackSide,
-    depthWrite: false,
-    uniforms: {
-      topColor: { value: new THREE.Color(0x96b8c8) },
-      horizonColor: { value: new THREE.Color(0xc6b5aa) },
-      groundGlow: { value: new THREE.Color(0xba8165) },
-    },
-    vertexShader: `
-      varying vec3 vLocalPosition;
-      void main() {
-        vLocalPosition = position;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-      }
-    `,
-    fragmentShader: `
-      varying vec3 vLocalPosition;
-      uniform vec3 topColor;
-      uniform vec3 horizonColor;
-      uniform vec3 groundGlow;
-      void main() {
-        float h = normalize(vLocalPosition).y;
-        vec3 sky = mix(horizonColor, topColor, smoothstep(0.05, 0.86, h));
-        sky = mix(groundGlow, sky, smoothstep(-0.18, 0.18, h));
-        gl_FragColor = vec4(sky, 1.0);
-      }
-    `,
-  }),
-);
-skyDome.frustumCulled = false;
-scene.add(skyDome);
-
-const sun = new THREE.Sprite(
-  new THREE.SpriteMaterial({
-    map: createSunTexture(),
-    color: 0xffffff,
-    transparent: true,
-    opacity: 1,
-    depthWrite: false,
-    depthTest: true,
-    blending: THREE.AdditiveBlending,
-    toneMapped: false,
-  }),
-);
-sun.scale.set(16, 16, 1);
-sun.position.copy(camera.position).addScaledVector(sunDirection, sunDistance);
+const sunDistance = 600;
+const sun = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: createSunTexture(),
+  color: 0xffffff,
+  transparent: true,
+  depthWrite: false,
+  depthTest: true,
+  blending: THREE.AdditiveBlending,
+  toneMapped: false,
+}));
+const sunSize = 16 * sunDistance / 122;
+sun.scale.set(sunSize, sunSize, 1);
 sun.renderOrder = 1;
 sun.frustumCulled = false;
 scene.add(sun);
 
 function updateSunAndKeyLight() {
+  // Use real elapsed time, independent of movement and the capped physics delta.
+  // Expensive terrain updates must not slow down the sun when the player walks.
+  const elapsedSeconds = state.running ? ((pausedAt ?? performance.now()) - dayStartedAt) / 1000 : 0;
+  const cycleSeconds = (initialSunAngle / Math.PI * daylightDuration + elapsedSeconds) % dayDuration;
+  // Repeat sunrise → daylight → sunset → a shorter night → sunrise.
+  const sunAngle = cycleSeconds < daylightDuration
+    ? cycleSeconds / daylightDuration * Math.PI
+    : Math.PI + (cycleSeconds - daylightDuration) / nightDuration * Math.PI;
+  sunDirection.copy(sunHorizontalDirection).multiplyScalar(Math.cos(sunAngle));
+  sunDirection.y = Math.sin(sunAngle);
+  const daylight = THREE.MathUtils.smoothstep(sunDirection.y, -0.18, 0.4);
+  const upperSkyDaylight = THREE.MathUtils.smoothstep(sunDirection.y, -0.04, 0.45);
+  const directLight = THREE.MathUtils.smoothstep(sunDirection.y, -0.03, 0.35);
+  const sunset = (1 - THREE.MathUtils.smoothstep(Math.abs(sunDirection.y), 0, 0.4)) * THREE.MathUtils.smoothstep(sunDirection.y, -0.2, 0.02);
+  const colors = daylightColors;
+  const sky = skyDome.material.uniforms;
+  sky.nightStrength.value = 1 - THREE.MathUtils.smoothstep(sunDirection.y, -0.25, 0.02);
+  sky.starTime.value = elapsedSeconds;
+  sky.dawnStrength.value = sunset;
+  sky.topColor.value.copy(colors.nightSky).lerp(colors.daySky, upperSkyDaylight);
+  sky.horizonColor.value.copy(colors.nightHorizon).lerp(colors.dayHorizon, daylight).lerp(colors.sunset, sunset * 0.75);
+  sky.groundGlow.value.copy(colors.nightGround).lerp(colors.dayGround, daylight);
+  scene.fog.color.copy(sky.horizonColor.value);
+  scene.background.copy(sky.topColor.value);
+  hemi.intensity = THREE.MathUtils.lerp(0.85, 1.65, daylight);
+  hemi.color.copy(colors.nightAmbient).lerp(colors.daySky, daylight);
+  for (const material of cloudMaterials) {
+    material.color.copy(colors.nightCloud).lerp(colors.dayCloud, daylight)
+      .lerp(colors.twilightCloud, sunset * 0.45);
+  }
+  crystalMaterial.emissiveIntensity = THREE.MathUtils.lerp(5.5, 0.4, daylight);
+  for (const material of crystalDebrisMaterials) {
+    material.emissiveIntensity = THREE.MathUtils.lerp(1.4, 0.15, daylight);
+  }
+  keyLight.intensity = 2.7 * directLight;
+  keyLight.color.copy(colors.warmSun).lerp(colors.noonSun, THREE.MathUtils.smoothstep(sunDirection.y, 0, 0.8));
+  sun.material.opacity = THREE.MathUtils.smoothstep(sunDirection.y, -0.06, 0.06);
+  sun.visible = sun.material.opacity > 0;
   sun.position.copy(camera.position).addScaledVector(sunDirection, sunDistance);
+  // Lift the apparent sun near the horizon so its bright core clears the terrain.
+  const horizonLift = 0.055 * Math.exp(-Math.pow(sunDirection.y / 0.18, 2));
+  sun.position.y += sunDistance * horizonLift;
   keyLight.target.position.copy(ship.position);
   keyLight.position.copy(ship.position).addScaledVector(sunDirection, keyLightDistance);
   keyLight.target.updateMatrixWorld();
@@ -539,6 +717,8 @@ const materials = {
 
 const world = new THREE.Group();
 scene.add(world);
+const sandworm = createSandworm(terrainHeight);
+world.add(sandworm.object);
 
 const rustDark = new THREE.Color(0x623727);
 const rustBase = new THREE.Color(0x9a4e32);
@@ -1128,32 +1308,90 @@ for (let i = 0; i < 150; i += 1) {
 }
 
 // Only one rare crystal deposit shares the area with 150 ordinary rocks.
-const crystalMaterial = new THREE.MeshStandardMaterial({
-  color: 0x923de0, emissive: 0x3d086c, emissiveIntensity: 0.35,
-  roughness: 0.22, metalness: 0.18, flatShading: true,
+const crystalMaterial = new THREE.MeshPhysicalMaterial({
+  color: 0xc3a0e8, emissive: 0x351452, emissiveIntensity: 0.4,
+  roughness: 0.22, metalness: 0, flatShading: true,
+  clearcoat: 0.65, clearcoatRoughness: 0.16,
+  ior: 1.54, specularIntensity: 1, vertexColors: true,
 });
-const crystalGeometry = new THREE.CylinderGeometry(0.52, 0.65, 1, 6);
-const crystalTipGeometry = new THREE.ConeGeometry(0.52, 0.85, 6);
+// Preserve mineral variations in the glow instead of washing out the facets at night.
+crystalMaterial.onBeforeCompile = (shader) => {
+  shader.fragmentShader = shader.fragmentShader.replace(
+    '#include <emissivemap_fragment>',
+    `#include <emissivemap_fragment>
+    #ifdef USE_COLOR
+      totalEmissiveRadiance *= mix(vec3(0.55), vColor.rgb, 0.65);
+    #endif`,
+  );
+};
+
+function createCrystalGeometry(seed, height, radius) {
+  const positions = [];
+  const colors = [];
+  const rings = [];
+  const faceColor = new THREE.Color();
+  const purple = new THREE.Color(0x7945ae);
+  const quartz = new THREE.Color(0xe5d9f0);
+  const radii = Array.from({ length: 6 }, (_, side) => radius * (0.83 + hash2(seed, side) * 0.27));
+  for (let ring = 0; ring < 4; ring += 1) {
+    rings.push(Array.from({ length: 6 }, (_, side) => {
+      const angle = side / 6 * Math.PI * 2;
+      const taper = [0.8, 1, 0.94, 0.72][ring];
+      const y = [0, height * 0.12, height * 0.78, height * 0.91][ring];
+      return new THREE.Vector3(
+        Math.cos(angle) * radii[side] * taper + ring * radius * 0.025,
+        y + (ring > 1 ? (hash2(seed + ring, side) - 0.5) * height * 0.065 : 0),
+        Math.sin(angle) * radii[side] * taper,
+      );
+    }));
+  }
+  function triangle(a, b, c, side, ring) {
+    for (const vertex of [a, b, c]) {
+      positions.push(vertex.x, vertex.y, vertex.z);
+      const inclusion = smoothNoise(vertex.x * 13 + seed, vertex.y * 8 + vertex.z * 5);
+      const band = Math.pow(0.5 + 0.5 * Math.sin(vertex.y * 24 + seed), 12) * 0.12;
+      faceColor.copy(purple).lerp(quartz, 0.12 + inclusion * 0.36 + band + (ring === 3 ? 0.12 : 0));
+      faceColor.multiplyScalar(0.66 + hash2(seed + 31, side) * 0.52);
+      colors.push(faceColor.r, faceColor.g, faceColor.b);
+    }
+  }
+  for (let side = 0; side < 6; side += 1) {
+    const next = (side + 1) % 6;
+    for (let ring = 0; ring < 3; ring += 1) {
+      triangle(rings[ring][side], rings[ring + 1][side], rings[ring][next], side, ring);
+      triangle(rings[ring][next], rings[ring + 1][side], rings[ring + 1][next], side, ring);
+    }
+    triangle(rings[3][side], new THREE.Vector3(radius * 0.12, height * 1.12, -radius * 0.08), rings[3][next], side, 3);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  geometry.computeVertexNormals();
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
 const crystals = [];
 for (let i = 0; i < 1; i += 1) {
   const deposit = new THREE.Group();
-  for (let shard = 0; shard < 5; shard += 1) {
-    const cluster = new THREE.Group();
-    const height = shard === 0 ? 3.8 : 1.4 + hash2(i, shard) * 1.4;
-    const shaft = new THREE.Mesh(crystalGeometry, crystalMaterial);
-    shaft.scale.y = height;
-    shaft.position.y = height / 2;
-    const tip = new THREE.Mesh(crystalTipGeometry, crystalMaterial);
-    tip.position.y = height + 0.425;
-    shaft.castShadow = tip.castShadow = true;
-    cluster.add(shaft, tip);
-    const angle = shard * Math.PI / 2;
+  const matrix = new THREE.Mesh(new THREE.DodecahedronGeometry(1.15, 1), naturalRockMaterials[0]);
+  matrix.scale.set(1.3, 0.32, 1.1);
+  matrix.position.y = 0.03;
+  matrix.castShadow = matrix.receiveShadow = true;
+  deposit.add(matrix);
+  for (let shard = 0; shard < 13; shard += 1) {
+    const seed = 43 + shard * 7.3;
+    const height = shard === 0 ? 3.8 : 0.55 + hash2(seed, 2) * 2.15;
+    const radius = shard === 0 ? 0.47 : 0.15 + hash2(seed, 5) * 0.23;
+    const crystal = new THREE.Mesh(createCrystalGeometry(seed, height, radius), crystalMaterial);
+    const angle = shard * 2.39996;
     if (shard > 0) {
-      cluster.position.set(Math.cos(angle) * 0.75, 0, Math.sin(angle) * 0.75);
-      cluster.rotation.set(Math.sin(angle) * 0.22, angle, -Math.cos(angle) * 0.22);
-      cluster.scale.setScalar(0.75);
+      const spread = 0.45 + hash2(seed, 9) * 0.65;
+      crystal.position.set(Math.cos(angle) * spread, 0, Math.sin(angle) * spread);
+      crystal.rotation.set(Math.sin(angle) * 0.32, angle, -Math.cos(angle) * 0.32);
     }
-    deposit.add(cluster);
+    crystal.castShadow = crystal.receiveShadow = true;
+    deposit.add(crystal);
   }
   const angle = i * 2.4;
   deposit.position.set(Math.cos(angle) * (45 + i * 18), 0, Math.sin(angle) * (45 + i * 18));
@@ -1199,6 +1437,16 @@ function getStoneInventoryImage(isCrystal = false) {
 
 const rockFragments = [];
 const rockFragmentGeometry = new THREE.DodecahedronGeometry(0.18, 0);
+const crystalFragmentGeometry = new THREE.OctahedronGeometry(0.18, 0);
+const blackCrystalDebrisMaterial = new THREE.MeshStandardMaterial({
+  color: 0x15121a, roughness: 0.72, metalness: 0.05, flatShading: true,
+});
+const crystalDebrisMaterials = [0x8a42c9, 0xad66df, 0x6930a2].map((color) =>
+  new THREE.MeshPhysicalMaterial({
+    color, emissive: 0x52127d, emissiveIntensity: 0.15,
+    roughness: 0.24, metalness: 0, clearcoat: 0.6, flatShading: true,
+  }),
+);
 
 for (let i = 0; i < 512; i += 1) {
   const fragmentMaterials = [materials.rock, materials.rockDark, materials.rockLight, materials.rockStrata];
@@ -1256,7 +1504,9 @@ function emitRockImpact(hit) {
   for (let i = 0; i < 2; i += 1) {
     const chip = rockFragments[rockFragmentIndex];
     rockFragmentIndex = (rockFragmentIndex + 1) % rockFragments.length;
-    chip.material = hit.rock?.userData.isCrystal ? crystalMaterial : chip.userData.stoneMaterial;
+    const isCrystal = hit.rock?.userData.isCrystal === true;
+    chip.material = isCrystal ? crystalDebrisMaterials[rockFragmentIndex % crystalDebrisMaterials.length] : chip.userData.stoneMaterial;
+    chip.geometry = isCrystal ? crystalFragmentGeometry : rockFragmentGeometry;
     if (!hit.rock) {
       if (!chip.userData.soilMaterial) {
         chip.userData.soilMaterial = new THREE.MeshStandardMaterial({ roughness: 1, metalness: 0, flatShading: true });
@@ -1349,7 +1599,7 @@ function placeCloudAround(cloud, originX, originZ, range = 320) {
   const angle = THREE.MathUtils.randFloat(0, Math.PI * 2);
   const distance = THREE.MathUtils.randFloat(range * 0.25, range);
   cloud.position.x = originX + Math.sin(angle) * distance;
-  cloud.position.y = THREE.MathUtils.randFloat(48, 72);
+  cloud.position.y = THREE.MathUtils.randFloat(95, 125);
   cloud.position.z = originZ + Math.cos(angle) * distance;
 }
 
@@ -1380,7 +1630,7 @@ for (let i = 0; i < 56; i += 1) {
   }
   cloud.scale.setScalar(THREE.MathUtils.randFloat(0.78, 1.18));
   cloud.rotation.y = THREE.MathUtils.randFloat(-0.22, 0.22);
-  cloud.position.set(THREE.MathUtils.randFloatSpread(260), THREE.MathUtils.randFloat(48, 72), THREE.MathUtils.randFloatSpread(260));
+  cloud.position.set(THREE.MathUtils.randFloatSpread(260), THREE.MathUtils.randFloat(95, 125), THREE.MathUtils.randFloatSpread(260));
   cloud.userData = { speedFactor: THREE.MathUtils.randFloat(0.025, 0.055) };
   clouds.push(cloud);
   scene.add(cloud);
@@ -1481,6 +1731,63 @@ for (let i = 0; i < 660; i += 1) {
   world.add(tuft);
 }
 
+// Fine woven relief gives the pressure suit a fabric surface at close range.
+const suitCanvas = document.createElement('canvas');
+suitCanvas.width = suitCanvas.height = 128;
+const suitContext = suitCanvas.getContext('2d');
+const suitPixels = suitContext.createImageData(128, 128);
+for (let y = 0; y < 128; y += 1) {
+  for (let x = 0; x < 128; x += 1) {
+    const weave = Math.sin(x * Math.PI / 2) * Math.cos(y * Math.PI / 2);
+    const fiber = hash2(x, y) * 18;
+    const value = 122 + weave * 22 + fiber;
+    const index = (y * 128 + x) * 4;
+    suitPixels.data[index] = suitPixels.data[index + 1] = suitPixels.data[index + 2] = value;
+    suitPixels.data[index + 3] = 255;
+  }
+}
+suitContext.putImageData(suitPixels, 0, 0);
+const suitWeave = new THREE.CanvasTexture(suitCanvas);
+suitWeave.wrapS = suitWeave.wrapT = THREE.RepeatWrapping;
+suitWeave.repeat.set(7, 7);
+suitWeave.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+for (const material of [materials.ship, materials.suitTrim, materials.suitPanel]) {
+  material.bumpMap = suitWeave;
+  material.bumpScale = 0.007;
+  material.roughness = 0.86;
+  material.metalness = 0;
+}
+const helmetShellMaterial = new THREE.MeshPhysicalMaterial({
+  color: 0xe4e5db, roughness: 0.29, metalness: 0.05,
+  clearcoat: 0.5, clearcoatRoughness: 0.26,
+});
+const visorCanvas = document.createElement('canvas');
+visorCanvas.width = 512;
+visorCanvas.height = 256;
+const visorContext = visorCanvas.getContext('2d');
+const visorSky = visorContext.createLinearGradient(0, 0, 0, 256);
+visorSky.addColorStop(0, '#20364c');
+visorSky.addColorStop(0.44, '#b9cfdb');
+visorSky.addColorStop(0.5, '#e3c7a2');
+visorSky.addColorStop(0.54, '#82533a');
+visorSky.addColorStop(1, '#261c17');
+visorContext.fillStyle = visorSky;
+visorContext.fillRect(0, 0, 512, 256);
+const reflection = visorContext.createRadialGradient(160, 76, 2, 160, 76, 55);
+reflection.addColorStop(0, '#fff5d5');
+reflection.addColorStop(0.1, '#fff0bc');
+reflection.addColorStop(1, 'rgba(255,240,188,0)');
+visorContext.fillStyle = reflection;
+visorContext.fillRect(0, 0, 512, 256);
+const visorEnvironment = new THREE.CanvasTexture(visorCanvas);
+visorEnvironment.colorSpace = THREE.SRGBColorSpace;
+visorEnvironment.mapping = THREE.EquirectangularReflectionMapping;
+const visorMaterial = new THREE.MeshPhysicalMaterial({
+  color: 0xd4a24d, metalness: 0.88, roughness: 0.16,
+  clearcoat: 1, clearcoatRoughness: 0.09,
+  envMap: visorEnvironment, envMapIntensity: 0.85,
+});
+
 const ship = new THREE.Group();
 ship.scale.setScalar(0.8778);
 ship.rotation.y = state.faceYaw;
@@ -1534,7 +1841,7 @@ for (const [x, y, sx, sy] of [
   ship.add(dustPatch);
 }
 
-const chestPanel = new THREE.Mesh(new THREE.BoxGeometry(0.43, 0.31, 0.07), materials.wing);
+const chestPanel = new THREE.Mesh(new RoundedBoxGeometry(0.43, 0.31, 0.07, 3, 0.018), materials.wing);
 chestPanel.position.set(0, 0.3, 0.345);
 chestPanel.castShadow = true;
 ship.add(chestPanel);
@@ -1610,7 +1917,7 @@ lowerNeckSeal.rotation.x = Math.PI / 2;
 lowerNeckSeal.castShadow = true;
 ship.add(lowerNeckSeal);
 
-const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.49, 40, 24), materials.ship);
+const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.46, 48, 32), helmetShellMaterial);
 helmet.position.set(0, 1.22, 0.045);
 helmet.scale.set(0.98, 1.0, 0.95);
 helmet.castShadow = true;
@@ -1630,20 +1937,20 @@ helmetCrownBand.scale.set(1.0, 0.88, 1);
 helmetCrownBand.castShadow = true;
 ship.add(helmetCrownBand);
 
-const visor = new THREE.Mesh(new THREE.SphereGeometry(0.305, 56, 28, 0, Math.PI, 0, Math.PI), materials.canopy);
-visor.position.set(0, 1.24, 0.435);
+const visor = new THREE.Mesh(new THREE.SphereGeometry(0.305, 56, 28, 0, Math.PI, 0, Math.PI), visorMaterial);
+visor.position.set(0, 1.24, 0.375);
 visor.scale.set(1.04, 1, 0.82);
 visor.castShadow = false;
 ship.add(visor);
 
 const visorSeal = new THREE.Mesh(new THREE.TorusGeometry(0.322, 0.025, 10, 56), materials.rubber);
-visorSeal.position.set(0, 1.24, 0.438);
+visorSeal.position.set(0, 1.24, 0.378);
 visorSeal.scale.set(1.04, 1, 1);
 visorSeal.castShadow = true;
 ship.add(visorSeal);
 
 const visorGlow = new THREE.Mesh(new THREE.TorusGeometry(0.282, 0.012, 8, 48), materials.helmetGlass);
-visorGlow.position.set(0, 1.24, 0.465);
+visorGlow.position.set(0, 1.24, 0.405);
 visorGlow.scale.set(1.04, 1, 1);
 visorGlow.castShadow = false;
 ship.add(visorGlow);
@@ -1651,19 +1958,19 @@ ship.add(visorGlow);
 const visorReflection = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.022, 0.012), materials.helmetGlass);
 visorReflection.position.set(-0.09, 1.37, 0.665);
 visorReflection.rotation.z = -0.22;
-ship.add(visorReflection);
+
 
 const visorLowerReflection = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.016, 0.012), materials.helmetGlass);
 visorLowerReflection.position.set(0.12, 1.13, 0.658);
 visorLowerReflection.rotation.z = -0.14;
-ship.add(visorLowerReflection);
+
 
 const chinVent = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.045, 0.035), materials.rubber);
 chinVent.position.set(0, 1.0, 0.43);
 chinVent.castShadow = true;
 ship.add(chinVent);
 
-const helmetAnimatedParts = [helmet, helmetBand, helmetCrownBand, visor, visorSeal, visorGlow, visorReflection, visorLowerReflection, chinVent];
+const helmetAnimatedParts = [helmet, helmetBand, helmetCrownBand, visor, visorSeal, visorGlow, chinVent];
 
 for (const side of [-1, 1]) {
   const cheekGuard = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.16, 0.035), materials.suitPanel);
@@ -1694,7 +2001,7 @@ const backpackRig = new THREE.Group();
 backpackRig.position.copy(torso.position);
 ship.add(backpackRig);
 
-const backpack = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.82, 0.27), materials.backpack);
+const backpack = new THREE.Mesh(new RoundedBoxGeometry(0.6, 0.82, 0.27, 3, 0.045), materials.backpack);
 backpack.position.set(0, 0.3, -0.39);
 backpack.castShadow = true;
 backpackRig.add(backpack);
@@ -1716,12 +2023,60 @@ for (const [x, y, sx, sy] of [
 }
 
 const jetpackFlames = new THREE.Group();
-const jetpackFlameGeometry = new THREE.ConeGeometry(0.09, 1.9, 20, 1, true);
+function createExhaustMaterial(core, side) {
+  return new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending, toneMapped: false,
+    uniforms: { time: { value: 0 }, burn: { value: 0 }, core: { value: core ? 1 : 0 }, seed: { value: side * 3.7 } },
+    vertexShader: `
+      varying vec2 vUv;
+      varying vec3 vNormal;
+      varying vec3 vView;
+      uniform float time;
+      uniform float seed;
+      void main() {
+        vUv = uv;
+        vec3 p = position;
+        float travel = uv.y;
+        float turbulence = sin(travel * 23.0 - time * 19.0 + seed)
+          * sin(uv.x * 18.8496 + time * 7.0) * travel;
+        p.xy *= 1.0 + turbulence * 0.13;
+        p.x += sin(travel * 14.0 - time * 16.0 + seed) * travel * travel * 0.009;
+        vec4 viewPosition = modelViewMatrix * vec4(p, 1.0);
+        vNormal = normalize(normalMatrix * normal);
+        vView = -viewPosition.xyz;
+        gl_Position = projectionMatrix * viewPosition;
+      }
+    `,
+    fragmentShader: `
+      varying vec2 vUv;
+      varying vec3 vNormal;
+      varying vec3 vView;
+      uniform float time;
+      uniform float burn;
+      uniform float core;
+      uniform float seed;
+      void main() {
+        float t = vUv.y;
+        float edge = pow(abs(dot(normalize(vNormal), normalize(vView))), 0.7);
+        float turbulence = 0.82 + 0.12 * sin(t * 47.0 - time * 31.0 + seed)
+          + 0.06 * sin(vUv.x * 31.0 + t * 81.0 - time * 23.0);
+        float diamonds = pow(0.5 + 0.5 * cos(t * 38.0 - 0.4), 6.0) * exp(-t * 3.0);
+        vec3 color = mix(vec3(0.3, 0.6, 1.0), vec3(1.0, 0.38, 0.08), smoothstep(0.16, 0.8, t));
+        color = mix(color, vec3(0.85, 0.94, 1.0), core * (1.0 - smoothstep(0.0, 0.8, t)));
+        float fade = (1.0 - smoothstep(0.25, 1.0, t)) * smoothstep(0.0, 0.035, t);
+        float alpha = burn * fade * edge * turbulence * mix(0.55, 0.85, core);
+        gl_FragColor = vec4(color * (1.2 + core + diamonds * 0.7), alpha);
+      }
+    `,
+  });
+}
+const jetpackFlameGeometry = new THREE.CylinderGeometry(0.006, 0.06, 1.3, 24, 24, true);
 jetpackFlameGeometry.rotateX(-Math.PI / 2);
-jetpackFlameGeometry.translate(0, 0, -0.95);
-const jetpackCoreGeometry = new THREE.ConeGeometry(0.04, 1.25, 16, 1, true);
+jetpackFlameGeometry.translate(0, 0, -0.65);
+const jetpackCoreGeometry = new THREE.CylinderGeometry(0.002, 0.033, 0.7, 20, 16, true);
 jetpackCoreGeometry.rotateX(-Math.PI / 2);
-jetpackCoreGeometry.translate(0, 0, -0.625);
+jetpackCoreGeometry.translate(0, 0, -0.35);
 
 for (const side of [-1, 1]) {
   const x = side * 0.36;
@@ -1732,10 +2087,13 @@ for (const side of [-1, 1]) {
   backpackRig.add(nozzle);
 
   const flame = new THREE.Group();
-  const outer = new THREE.Mesh(jetpackFlameGeometry, materials.jetpackFlame.clone());
-  const core = new THREE.Mesh(jetpackCoreGeometry, materials.jetpackCore.clone());
+  const outer = new THREE.Mesh(jetpackFlameGeometry, createExhaustMaterial(false, side));
+  const core = new THREE.Mesh(jetpackCoreGeometry, createExhaustMaterial(true, side));
   flame.position.set(x, 0.08, -0.66);
-  flame.userData = { outer, core, side };
+  const glow = new THREE.PointLight(0x82baff, 0, 2.5, 2);
+  glow.position.z = -0.12;
+  flame.add(glow);
+  flame.userData = { outer, core, side, glow };
   flame.visible = false;
   flame.add(outer, core);
   jetpackFlames.add(flame);
@@ -1859,7 +2217,7 @@ for (const side of [-1, 1]) {
   shoulderRing.castShadow = true;
   ship.add(shoulderRing);
 
-  const upperArm = new THREE.Mesh(new THREE.CapsuleGeometry(0.095, 0.5, 8, 16), materials.ship);
+  const upperArm = new THREE.Mesh(new THREE.CapsuleGeometry(0.115, 0.46, 10, 20), materials.ship);
   upperArm.position.set(side * 0.65, 0.34, 0.08);
   upperArm.rotation.z = side * 0.35;
   upperArm.castShadow = true;
@@ -2052,7 +2410,7 @@ for (const side of [-1, 1]) {
   thighRing.castShadow = true;
   ship.add(thighRing);
 
-  const upperLeg = new THREE.Mesh(new THREE.CapsuleGeometry(0.105, 0.34, 8, 16), materials.ship);
+  const upperLeg = new THREE.Mesh(new THREE.CapsuleGeometry(0.125, 0.14, 10, 20), materials.ship);
   upperLeg.position.set(side * 0.24, -0.58, 0.055);
   upperLeg.rotation.z = side * -0.06;
   upperLeg.castShadow = true;
@@ -2060,7 +2418,7 @@ for (const side of [-1, 1]) {
   addRingDetail(upperLeg, 0.112, 0.12, materials.fabricCrease, 0.007);
   addRingDetail(upperLeg, 0.112, -0.09, materials.fabricCrease, 0.007);
 
-  const leg = new THREE.Mesh(new THREE.CapsuleGeometry(0.115, 0.56, 8, 16), materials.ship);
+  const leg = new THREE.Mesh(new THREE.CapsuleGeometry(0.12, 0.17, 10, 20), materials.ship);
   leg.position.set(side * 0.24, -0.72, 0.03);
   leg.rotation.z = side * -0.09;
   leg.castShadow = true;
@@ -2091,7 +2449,7 @@ for (const side of [-1, 1]) {
   ankleRing.castShadow = true;
   ship.add(ankleRing);
 
-  const boot = new THREE.Mesh(new THREE.BoxGeometry(0.23, 0.16, 0.35), materials.rubber);
+  const boot = new THREE.Mesh(new RoundedBoxGeometry(0.23, 0.16, 0.35, 3, 0.035), materials.rubber);
   boot.position.set(side * 0.25, -1.08, 0.12);
   boot.scale.set(1.05, 0.9, 1.12);
   boot.rotation.z = side * -0.04;
@@ -2177,6 +2535,37 @@ for (const side of [-1, 1]) {
   });
 }
 
+// Flexible bellows and stitched reinforcements follow the existing limb animation.
+for (const rig of limbRig) {
+  for (let fold = 0; fold < 5; fold += 1) {
+    const elbowFold = addRingDetail(rig.upperArm, 0.113 + Math.sin(fold * 0.8) * 0.004,
+      -0.14 - fold * 0.022, materials.fabricCrease, 0.004);
+    elbowFold.scale.z = 0.92;
+    const kneeFold = addRingDetail(rig.leg, 0.121, 0.16 - fold * 0.023, materials.suitShadow, 0.004);
+    kneeFold.scale.z = 0.92;
+  }
+  const wristCuff = new THREE.Mesh(new THREE.CylinderGeometry(0.106, 0.11, 0.075, 24), materials.suitTrim);
+  wristCuff.position.set(0, 0.08, 0);
+  rig.glove.add(wristCuff);
+  const knucklePad = new THREE.Mesh(new RoundedBoxGeometry(0.16, 0.07, 0.035, 2, 0.012), materials.suitTrim);
+  knucklePad.position.set(0, 0.015, -0.11);
+  rig.glove.add(knucklePad);
+}
+for (const side of [-1, 1]) {
+  const hinge = new THREE.Mesh(new THREE.CylinderGeometry(0.067, 0.067, 0.025, 24), materials.metalTrim);
+  hinge.rotation.z = Math.PI / 2;
+  hinge.position.set(side * 0.438, 1.23, 0.13);
+  ship.add(hinge);
+  helmetAnimatedParts.push(hinge);
+  for (let vent = 0; vent < 4; vent += 1) {
+    const slit = new THREE.Mesh(new RoundedBoxGeometry(0.045, 0.009, 0.012, 1, 0.003), materials.rubber);
+    slit.position.set(side * 0.27, 1.03 + vent * 0.023, 0.34);
+    slit.rotation.y = side * 0.35;
+    ship.add(slit);
+    helmetAnimatedParts.push(slit);
+  }
+}
+
 const antenna = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.46, 8), materials.rubber);
 antenna.position.set(0.24, 1.64, -0.02);
 antenna.rotation.z = -0.45;
@@ -2252,9 +2641,13 @@ for (let i = 0; i < 2200; i += 1) {
   soleContext.fillRect(soleRandom() * 128, soleRandom() * 256, 1 + soleRandom() * 2, 1 + soleRandom() * 3);
 }
 const soleTexture = new THREE.CanvasTexture(soleCanvas);
-materials.footprint.alphaMap = soleTexture;
-const footprintGeometry = new THREE.PlaneGeometry(0.26, 0.43, 4, 8);
+// The canvas stores the tread in its alpha channel, not in the green channel.
+materials.footprint.map = soleTexture;
+materials.footprint.alphaMap = null;
+const footprintGeometry = new THREE.PlaneGeometry(0.24, 0.40, 8, 14);
 footprintGeometry.rotateX(-Math.PI / 2);
+// Canvas top is the toe; the astronaut's toes point along local +Z.
+footprintGeometry.rotateY(Math.PI);
 const footprintPool = [];
 let footprintIndex = 0;
 
@@ -2263,7 +2656,7 @@ for (let i = 0; i < 120; i += 1) {
   const mark = new THREE.Mesh(footprintGeometry.clone(), materials.footprint.clone());
   group.add(mark);
   group.visible = false;
-  group.userData = { age: 0, lifetime: 24, marks: [mark], strength: 0.42 };
+  group.userData = { age: 0, lifetime: 45, marks: [mark], strength: 0.65 };
   footprintPool.push(group);
   world.add(group);
 }
@@ -2288,7 +2681,7 @@ for (let i = 0; i < 72; i += 1) {
 }
 
 const footWorldPosition = new THREE.Vector3();
-const stepBackVector = new THREE.Vector3();
+const footForward = new THREE.Vector3();
 const stepDustVelocity = new THREE.Vector3();
 
 function resetFootEffects() {
@@ -2308,6 +2701,22 @@ function resetFootEffects() {
   }
 }
 
+function updateInventoryResources() {
+  for (const [id, count, crystal] of [['inventory-stone', state.stones, false], ['inventory-crystal', state.crystals, true]]) {
+    const slot = document.getElementById(id);
+    slot.classList.toggle('empty', count === 0);
+    if (!slot.querySelector('img')) {
+      slot.innerHTML = '<span class="resource-kind"></span><img class="stone-thumbnail"><strong></strong><small></small>';
+      slot.querySelector('img').src = getStoneInventoryImage(crystal);
+      slot.querySelector('img').alt = crystal ? 'Violetter Kristall' : 'Stein';
+      slot.querySelector('strong').textContent = crystal ? 'Violetter Kristall' : 'Stein';
+      slot.querySelector('.resource-kind').textContent = crystal ? 'Selten' : 'Mineral';
+    }
+    slot.querySelector('small').textContent = count > 0 ? `${count} Stück` : 'Noch nicht gesammelt';
+  }
+  document.querySelector('#inventory-total').textContent = `${state.stones + state.crystals} gesammelt`;
+}
+
 function getRockDestructionTime(rock) {
   return rockDestructionTime * Math.max(1, rock.userData.hitRadius || 1);
 }
@@ -2319,14 +2728,9 @@ function damageRock(rock, amount) {
   lastRockHitTime = performance.now();
   if (rock.userData.laserDamage >= duration - 0.00001) {
     const isCrystal = rock.userData.isCrystal === true;
-    const count = isCrystal ? ++state.crystals : ++state.stones;
-    const slot = document.querySelector(isCrystal ? '#inventory-crystal' : '#inventory-stone');
-    slot.classList.remove('empty');
-    slot.innerHTML = '<img class="stone-thumbnail"><strong></strong><small></small>';
-    slot.querySelector('img').src = getStoneInventoryImage(isCrystal);
-    slot.querySelector('img').alt = isCrystal ? 'Violetter Kristall aus der Spielwelt' : 'Stein aus der Spielwelt';
-    slot.querySelector('strong').textContent = isCrystal ? 'Violetter Kristall' : 'Stein';
-    slot.querySelector('small').textContent = `${count} Stück`;
+    if (isCrystal) state.crystals += 1;
+    else state.stones += 1;
+    updateInventoryResources();
     shatterRock(rock, rock.position);
     damagedRock = null;
   }
@@ -2359,24 +2763,32 @@ function updateRockProgress() {
 }
 
 function shatterRock(rock, impactPosition) {
-  const fragmentCount = THREE.MathUtils.randInt(6, 10);
+  const isCrystal = rock.userData.isCrystal === true;
+  const fragmentCount = isCrystal ? 30 : THREE.MathUtils.randInt(6, 10);
   const baseRadius = rock.userData.hitRadius || 1;
 
   for (let i = 0; i < fragmentCount; i += 1) {
     const fragment = rockFragments[rockFragmentIndex];
     rockFragmentIndex = (rockFragmentIndex + 1) % rockFragments.length;
-    fragment.material = rock.userData.isCrystal ? crystalMaterial : fragment.userData.stoneMaterial;
+    fragment.material = isCrystal
+      ? (i % 5 === 0 ? blackCrystalDebrisMaterial : crystalDebrisMaterials[i % crystalDebrisMaterials.length])
+      : fragment.userData.stoneMaterial;
+    fragment.geometry = isCrystal && i >= 8 ? crystalFragmentGeometry : rockFragmentGeometry;
     const angle = THREE.MathUtils.randFloat(0, Math.PI * 2);
     const lift = THREE.MathUtils.randFloat(1.1, 2.7);
     const spread = THREE.MathUtils.randFloat(1.8, 4.8);
 
     fragment.position.set(
       impactPosition.x + THREE.MathUtils.randFloatSpread(baseRadius * 0.45),
-      terrainHeight(impactPosition.x, impactPosition.z) + THREE.MathUtils.randFloat(0.18, 0.58),
+      terrainHeight(impactPosition.x, impactPosition.z) + THREE.MathUtils.randFloat(0.18, isCrystal ? 2.8 : 0.58),
       impactPosition.z + THREE.MathUtils.randFloatSpread(baseRadius * 0.45),
     );
     fragment.rotation.set(THREE.MathUtils.randFloat(0, Math.PI), THREE.MathUtils.randFloat(0, Math.PI), THREE.MathUtils.randFloat(0, Math.PI));
     fragment.scale.setScalar(THREE.MathUtils.randFloat(0.45, 1.25) * Math.min(1.8, baseRadius));
+    if (isCrystal) {
+      const size = i < 8 ? THREE.MathUtils.randFloat(0.9, 1.8) : THREE.MathUtils.randFloat(0.18, 0.65);
+      fragment.scale.set(size, size * THREE.MathUtils.randFloat(1.1, 2), size * 0.8);
+    }
     fragment.visible = true;
     fragment.userData.age = 0;
     fragment.userData.lifetime = THREE.MathUtils.randFloat(10, 15);
@@ -2654,26 +3066,48 @@ function updateLaserShots(delta) {
   }
 }
 
-function emitFootprint(position, yaw) {
+function footprintGroundHeight(x, z) {
+  // Match the rendered terrain triangles instead of the unsampled noise surface.
+  const spacing = terrainTileSize / terrainTileSegments;
+  const halfTile = terrainTileSize / 2;
+  const x0 = Math.floor((x + halfTile) / spacing) * spacing - halfTile;
+  const z0 = Math.floor((z + halfTile) / spacing) * spacing - halfTile;
+  const u = (x - x0) / spacing;
+  const v = (z - z0) / spacing;
+  const a = terrainHeight(x0, z0);
+  const b = terrainHeight(x0, z0 + spacing);
+  const c = terrainHeight(x0 + spacing, z0 + spacing);
+  const d = terrainHeight(x0 + spacing, z0);
+  return u + v <= 1 ? a + (d - a) * u + (b - a) * v
+    : c + (b - c) * (1 - u) + (d - c) * (1 - v);
+}
+
+function emitFootprint(position, yaw, side) {
   const footprint = footprintPool[footprintIndex];
   footprintIndex = (footprintIndex + 1) % footprintPool.length;
 
   footprint.position.set(position.x, terrainHeight(position.x, position.z) + 0.028, position.z);
-  footprint.rotation.set(0, yaw + (Math.random() - 0.5) * 0.08, 0);
-  footprint.userData.strength = 0.38 + Math.random() * 0.1;
+  footprint.rotation.set(0, yaw, 0);
+  footprint.userData.strength = 0.62 + Math.random() * 0.1;
   footprint.visible = true;
   footprint.userData.age = 0;
 
   for (const mark of footprint.userData.marks) {
     mark.material.opacity = footprint.userData.strength;
     const vertices = mark.geometry.attributes.position;
+    const uv = mark.geometry.attributes.uv;
+    const baseUv = footprintGeometry.attributes.uv;
+    for (let i = 0; i < uv.count; i += 1) {
+      uv.setX(i, side < 0 ? 1 - baseUv.getX(i) : baseUv.getX(i));
+    }
+    uv.needsUpdate = true;
     const angle = footprint.rotation.y;
     for (let i = 0; i < vertices.count; i += 1) {
       const x = vertices.getX(i);
       const z = vertices.getZ(i);
       const worldX = position.x + x * Math.cos(angle) + z * Math.sin(angle);
       const worldZ = position.z - x * Math.sin(angle) + z * Math.cos(angle);
-      vertices.setY(i, terrainHeight(worldX, worldZ) + 0.012 - footprint.position.y);
+      vertices.setY(i, footprintGroundHeight(worldX, worldZ) + 0.025 - footprint.position.y);
     }
     vertices.needsUpdate = true;
     mark.geometry.computeBoundingSphere();
@@ -2712,13 +3146,12 @@ function emitStepEffects(movementAmount) {
   if (movementAmount < 0.16 || isPlayerStandingStill()) return;
 
   ship.updateMatrixWorld(true);
-  stepBackVector.set(-Math.sin(state.faceYaw) * 0.12, 0, -Math.cos(state.faceYaw) * 0.12);
 
   for (const rig of limbRig) {
     if (rig.isFootPlanted && !rig.wasFootPlanted) {
-      rig.bootSole.localToWorld(footWorldPosition.set(0, -0.03, 0.09));
-      footWorldPosition.add(stepBackVector);
-      emitFootprint(footWorldPosition, state.faceYaw);
+      rig.bootSole.localToWorld(footWorldPosition.set(0, -0.03, 0));
+      rig.bootSole.getWorldDirection(footForward);
+      emitFootprint(footWorldPosition, Math.atan2(footForward.x, footForward.z), rig.side);
       emitFootDust(footWorldPosition, movementAmount);
     }
     rig.wasFootPlanted = rig.isFootPlanted;
@@ -2755,6 +3188,11 @@ function updateFootEffects(delta) {
 const clock = new THREE.Clock();
 
 function resetGame() {
+  saveNameInput.value = 'Mein Spielstand';
+  dayStartedAt = performance.now();
+  state.stones = 0;
+  state.crystals = 0;
+  updateInventoryResources();
   damagedRock = null;
   for (const rock of rocks) rock.userData.laserDamage = 0;
   state.running = true;
@@ -2783,6 +3221,8 @@ function resetGame() {
   state.cameraOrbitYaw = Math.PI;
   state.cameraPitch = 0;
   state.runCycle = 0;
+  state.gaitBlend = 0;
+  state.sprintBlend = 0;
   activeKeys.clear();
   ship.position.x = 0;
   ship.position.z = playerMovement.startZ;
@@ -2823,20 +3263,24 @@ function updateJetpack(delta) {
   const verticalThrust = state.jetpackBurn * (1 - movementThrust);
 
   for (const flame of jetpackFlames.children) {
-    const flicker = 0.86 + Math.sin(clock.elapsedTime * 42 + flame.position.x * 19) * 0.14;
+    const flicker = 0.92 + Math.sin(clock.elapsedTime * 37 + flame.position.x * 19) * 0.05
+      + Math.sin(clock.elapsedTime * 61 + flame.position.x * 31) * 0.03;
     const outwardAngle = 0.22 + Math.sin(clock.elapsedTime * 29 + flame.position.x * 7) * 0.04;
     const directionalSpread = state.jetpackBurn * (1 - verticalThrust * 0.86);
     flame.visible = state.jetpackBurn > 0.025;
     flame.scale.set(
-      0.82 + state.jetpackBurn * 0.42 * flicker,
-      0.82 + state.jetpackBurn * 0.26,
-      0.74 + state.jetpackBurn * 2.0 * flicker,
+      (0.82 + state.jetpackBurn * 0.42 * flicker) * 1.3,
+      (0.82 + state.jetpackBurn * 0.26) * 1.3,
+      0.35 + state.jetpackBurn * 1.15 * flicker,
     );
     flame.rotation.x = THREE.MathUtils.lerp(-0.18 * state.jetpackBurn, -Math.PI / 2, verticalThrust);
     flame.rotation.y = -flame.userData.side * outwardAngle * directionalSpread;
     flame.rotation.z = Math.sin(clock.elapsedTime * 34 + flame.position.x * 11) * 0.08 * directionalSpread;
-    flame.userData.outer.material.opacity = state.jetpackBurn * 0.88;
-    flame.userData.core.material.opacity = state.jetpackBurn * 0.9;
+    for (const mesh of [flame.userData.outer, flame.userData.core]) {
+      mesh.material.uniforms.time.value = clock.elapsedTime;
+      mesh.material.uniforms.burn.value = state.jetpackBurn;
+    }
+    flame.userData.glow.intensity = state.jetpackBurn * flicker * 0.7;
   }
 
   if (!state.running) {
@@ -2884,9 +3328,10 @@ function setDefaultCameraPerspective() {
   }
   const isStandingStill = isPlayerStandingStill();
   const cameraYaw = isStandingStill ? state.cameraOrbitYaw : state.faceYaw;
-  const followDistance = innerWidth < 720 ? 14.5 : 12;
-  const lookAhead = isStandingStill ? 0 : innerWidth < 720 ? 9 : 10;
-  const height = (innerWidth < 720 ? 6.1 : 5.3) + state.flightHeight * 0.45;
+  const followDistance = innerWidth < 720 ? 9.5 : 8;
+  // Keep the viewing angle stable when starting or stopping movement.
+  const lookAhead = innerWidth < 720 ? 9 : 10;
+  const height = (innerWidth < 720 ? 4.5 : 3.9) + state.flightHeight * 0.45;
   const forwardX = Math.sin(cameraYaw);
   const forwardZ = Math.cos(cameraYaw);
   const horizontalLookAhead = lookAhead * Math.cos(state.cameraPitch * 0.65);
@@ -2897,7 +3342,7 @@ function setDefaultCameraPerspective() {
   camera.position.y = height;
   camera.lookAt(
     ship.position.x + forwardX * horizontalLookAhead,
-    ship.position.y + 0.55 + verticalLook,
+    camera.position.y - (innerWidth < 720 ? 4.1 : 3.6) + verticalLook,
     ship.position.z + forwardZ * horizontalLookAhead,
   );
 }
@@ -2922,24 +3367,21 @@ function updateMovementInputs() {
 }
 
 function moveWithMouse(event) {
-  if (inventory.open) return;
+  if (inventory.open || pauseMenu.open) return;
   updateAimFromPointer(event);
-  if (state.laserActive && !state.firstPerson) return;
   if (!state.running || event.pointerType === 'touch') return;
   const movementX = event.movementX || 0;
   const movementY = event.movementY || 0;
   if (Math.abs(movementX) + Math.abs(movementY) < 0.5) return;
 
   const isStandingStill = isPlayerStandingStill();
-  if (isStandingStill && !state.firstPerson) {
+  if (isStandingStill && !state.firstPerson && !state.laserActive) {
     state.cameraOrbitYaw -= movementX * 0.006;
   } else {
     state.faceYaw -= movementX * 0.006;
     state.cameraOrbitYaw = state.faceYaw;
   }
-  if (isStandingStill || state.firstPerson) {
-    state.cameraPitch = THREE.MathUtils.clamp(state.cameraPitch - movementY * 0.0045, -0.55, 1.05);
-  }
+  state.cameraPitch = THREE.MathUtils.clamp(state.cameraPitch - movementY * 0.0045, -0.55, 1.05);
   state.mouseSteer = 0;
   state.mouseDepth = 0;
   state.mouseMoveUntil = performance.now() + 140;
@@ -2951,20 +3393,18 @@ function setTouchSteer(direction) {
   state.steer = direction;
 }
 
-function updateAimFromPointer(event) {
-  if (event.pointerType === 'touch') return;
-  if (document.pointerLockElement === canvas) {
-    state.aimX = 0.5;
-    state.aimY = 0.5;
-    return;
-  }
-  state.aimX = THREE.MathUtils.clamp(event.clientX / Math.max(1, innerWidth), 0, 1);
-  state.aimY = THREE.MathUtils.clamp(event.clientY / Math.max(1, innerHeight), 0, 1);
+function updateAimFromPointer() {
+  state.aimX = 0.5;
+  state.aimY = 0.5;
 }
 
 function setLaserActive(event, active) {
-  if (inventory.open) return;
+  if (inventory.open || pauseMenu.open) return;
   if (event.button !== 0 || event.pointerType === 'touch') return;
+  if (active && state.running && !state.firstPerson && isPlayerStandingStill()) {
+    state.faceYaw = state.cameraOrbitYaw;
+    ship.rotation.y = state.faceYaw;
+  }
   if (active && state.running && state.firstPerson && event.target === canvas) {
     captureFirstPersonMouse();
   }
@@ -3106,6 +3546,7 @@ function updateDust(delta) {
 
 function resetSceneryAroundPlayer() {
   resetDustAroundPlayer();
+  sandworm.reset(ship.position, state.faceYaw);
 
   for (const tuft of grassTufts) {
     placeGroundObjectAroundPlayer(tuft, 0.015, 100, 3);
@@ -3127,10 +3568,13 @@ function resetSceneryAroundPlayer() {
 function updateRunAnimation(delta, movementAmount, movementDirection, sprintAmount) {
   const flightAmount = THREE.MathUtils.clamp(state.flightHeight * 0.7 + state.jetpackBurn, 0, 1);
   const groundedAmount = 1 - flightAmount;
-  const runAmount = Math.min(1, movementAmount) * groundedAmount;
+  state.gaitBlend = THREE.MathUtils.damp(state.gaitBlend, movementAmount, movementAmount > state.gaitBlend ? 9 : 12, delta);
+  state.sprintBlend = THREE.MathUtils.damp(state.sprintBlend, sprintAmount, 6, delta);
+  sprintAmount = state.sprintBlend;
+  const runAmount = state.gaitBlend * groundedAmount;
   const gaitAmount = THREE.MathUtils.smoothstep(runAmount, 0, 1);
   if (runAmount > 0.001) {
-    state.runCycle += delta * (3.65 + runAmount * 3.15) * movementDirection * (1 + sprintAmount * 0.45);
+    state.runCycle += delta * (4.6 + runAmount * 3.4) * (1 + sprintAmount * 0.35);
   }
 
   const bodyPhase = state.runCycle;
@@ -3146,7 +3590,7 @@ function updateRunAnimation(delta, movementAmount, movementDirection, sprintAmou
   bodyRig.torso.mesh.position.x += bodySway * 0.012;
   bodyRig.torso.mesh.position.z += sprintLean * 0.12;
   bodyRig.torso.mesh.rotation.copy(bodyRig.torso.rotation);
-  bodyRig.torso.mesh.rotation.x += runAmount * 0.035 + sprintLean * 0.42 + flightAmount * 0.16;
+  bodyRig.torso.mesh.rotation.x += runAmount * 0.035 + sprintLean * 0.22 + flightAmount * 0.16;
   bodyRig.torso.mesh.rotation.y += bodySway * -0.055;
   bodyRig.torso.mesh.rotation.z += steeringLean + bodySway * -0.035;
 
@@ -3168,7 +3612,7 @@ function updateRunAnimation(delta, movementAmount, movementDirection, sprintAmou
     part.mesh.position.y += bodyRise * 0.012 + breathing * 0.4 - flightAmount * 0.018;
     part.mesh.position.z += runAmount * 0.012 + sprintLean * 0.115 - flightAmount * 0.035;
     part.mesh.rotation.copy(part.rotation);
-    part.mesh.rotation.x += sprintLean * 0.28 - bodyRise * 0.018 - flightAmount * 0.1;
+    part.mesh.rotation.x += sprintLean * 0.10 - bodyRise * 0.018 - flightAmount * 0.1;
     part.mesh.rotation.y += bodySway * -0.038;
     part.mesh.rotation.z += bodySway * -0.022 + steeringLean * 0.35;
   }
@@ -3310,7 +3754,59 @@ function updateRunAnimation(delta, movementAmount, movementDirection, sprintAmou
     rig.bootSole.rotation.x += lowerLegStride * 0.2 - kneeFlex * 0.22 - footLift * 0.15 + footPlant * 0.1 + footRoll;
     rig.bootSole.rotation.z += rig.side * (legLateralSway * 1.1 + heelStrike * 0.04);
     rig.bootSole.rotation.x -= flightAmount * 1.04;
-    rig.isFootPlanted = flightAmount < 0.08 && runAmount > 0.18 && footLift < 0.035;
+    // A longer planted phase and a shorter swing keep the stride grounded.
+    const step = ((phase / (Math.PI * 2)) % 1 + 1) % 1;
+    const stance = 0.62;
+    const swinging = step > stance;
+    const swing = swinging ? (step - stance) / (1 - stance) : 0;
+    const easedSwing = swing * swing * (3 - 2 * swing);
+    const reach = (0.24 + sprintAmount * 0.11) * runAmount;
+    const travel = swinging ? THREE.MathUtils.lerp(-reach, reach, easedSwing)
+      : THREE.MathUtils.lerp(reach, -reach, step / stance);
+    const lift = Math.pow(Math.sin(swing * Math.PI), 1.3) * (0.13 + sprintAmount * 0.08) * runAmount;
+    const inputLength = Math.hypot(state.depthVelocity, state.steerVelocity);
+    const forward = inputLength > 0.01 ? state.depthVelocity / inputLength : movementDirection;
+    const sideways = inputLength > 0.01 ? -state.steerVelocity / inputLength : 0;
+    const footX = base.bootPosition.x + sideways * travel;
+    const footY = base.bootPosition.y + lift;
+    const footZ = base.bootPosition.z + forward * travel;
+    const hip = new THREE.Vector3(base.hipPosition.x, base.hipPosition.y - 0.035, base.hipPosition.z);
+    const ankle = new THREE.Vector3(footX, footY + 0.055, footZ - 0.045);
+    const axis = ankle.clone().sub(hip);
+    const distance = THREE.MathUtils.clamp(axis.length(), 0.15, 0.77);
+    axis.normalize();
+    const upperLength = 0.39;
+    const lowerLength = 0.40;
+    const along = (upperLength * upperLength - lowerLength * lowerLength + distance * distance) / (2 * distance);
+    const bend = Math.sqrt(Math.max(0, upperLength * upperLength - along * along));
+    const kneeForward = new THREE.Vector3(0, 0, 1).addScaledVector(axis, -axis.z).normalize();
+    const knee = hip.clone().addScaledVector(axis, along).addScaledVector(kneeForward, bend);
+    const groundBlend = 1 - flightAmount;
+    rig.upperLeg.position.lerp(hip.clone().add(knee).multiplyScalar(0.5), groundBlend);
+    rig.leg.position.lerp(knee.clone().add(ankle).multiplyScalar(0.5), groundBlend);
+    const up = new THREE.Vector3(0, 1, 0);
+    const upperRotation = new THREE.Quaternion().setFromUnitVectors(up, hip.clone().sub(knee).normalize());
+    const lowerRotation = new THREE.Quaternion().setFromUnitVectors(up, knee.clone().sub(ankle).normalize());
+    rig.upperLeg.quaternion.slerp(upperRotation, groundBlend);
+    rig.leg.quaternion.slerp(lowerRotation, groundBlend);
+    rig.kneePad.position.lerp(knee.clone().add(new THREE.Vector3(0, 0, 0.105)), groundBlend);
+    rig.ankleRing.position.lerp(ankle, groundBlend);
+    const roll = swinging ? -Math.sin(swing * Math.PI) * 0.12
+      : 0.13 * Math.exp(-step * 22) - 0.18 * THREE.MathUtils.smoothstep(step, 0.43, stance);
+    for (const [mesh, rest] of [[rig.boot, base.bootPosition], [rig.bootSole, base.bootSolePosition]]) {
+      const target = new THREE.Vector3(footX, footY + rest.y - base.bootPosition.y, footZ + rest.z - base.bootPosition.z);
+      mesh.position.lerp(target, groundBlend);
+      mesh.rotation.x = THREE.MathUtils.lerp(roll * forward, mesh.rotation.x, flightAmount);
+      mesh.rotation.z *= flightAmount;
+    }
+    // Keep the aiming hand steadier; the other arm counters the stepping leg.
+    const armSwing = -Math.sin(phase + 0.18) * runAmount * (0.19 + sprintAmount * 0.08);
+    const aiming = state.laserActive && handLaser?.parent === rig.glove;
+    if (!aiming) {
+      rig.glove.position.z = THREE.MathUtils.lerp(base.glovePosition.z + armSwing, rig.glove.position.z, flightAmount);
+      rig.upperArm.rotation.x *= 0.65;
+    }
+    rig.isFootPlanted = flightAmount < 0.08 && runAmount > 0.18 && !swinging;
   }
 }
 
@@ -3354,9 +3850,6 @@ function updateGame(delta) {
   const sprintAmount = state.sprinting && state.depthVelocity > 0.12 ? 1 : 0;
   const isMoving = movementAmount > 0.001;
   if (isMoving) {
-    if (!state.firstPerson) {
-      state.cameraPitch = THREE.MathUtils.damp(state.cameraPitch, 0, 8, delta);
-    }
     state.cameraOrbitYaw = state.faceYaw;
   }
   updateJetpack(delta);
@@ -3378,6 +3871,7 @@ function updateGame(delta) {
 
   ship.position.x += moveX * movementScale * delta;
   ship.position.z += moveZ * movementScale * delta;
+  sandworm.update(delta, ship.position, state.faceYaw);
   resolveMountainCollisions();
   resolveRockCollisions();
   const groundedMovement = state.flightHeight <= 0.02 ? movementAmount : 0;
@@ -3386,7 +3880,7 @@ function updateGame(delta) {
   const gaitSway = Math.sin(state.runCycle) * groundedMovement * 0.04;
   ship.position.y = terrainHeight(ship.position.x, ship.position.z) + playerGroundOffset + state.flightHeight + stepBob - weightSettle;
   ship.rotation.y = state.faceYaw;
-  ship.rotation.z = THREE.MathUtils.clamp(state.steerVelocity * -0.28 - gaitSway, -0.38, 0.38);
+  ship.rotation.z = THREE.MathUtils.clamp(state.steerVelocity * -0.09 - gaitSway * 0.4, -0.16, 0.16);
   ship.rotation.x = Math.sin(state.elapsed * 3.2) * 0.018 + THREE.MathUtils.clamp(state.depthVelocity * (0.075 + sprintAmount * 0.055), -0.09, 0.16) - weightSettle * 0.8 - state.jetpackBurn * 0.24;
   if (state.flightHeight <= 0.08 && state.flightVelocity <= 0.4) {
     emitStepEffects(movementAmount);
@@ -3435,28 +3929,15 @@ function resize() {
 }
 
 function updateFirstPersonCrosshair() {
-  firstPersonCrosshair.hidden = !state.running || !state.firstPerson || inventory.open;
-  if (firstPersonCrosshair.hidden) return;
-  let x = innerWidth / 2;
-  let y = innerHeight / 2;
-  if (state.laserActive && handLaser) {
-    handLaser.beam.updateWorldMatrix(true, false);
-    crosshairPosition.set(0, 0, 44);
-    handLaser.beam.localToWorld(crosshairPosition);
-    camera.updateMatrixWorld(true);
-    crosshairPosition.project(camera);
-    firstPersonCrosshair.hidden = crosshairPosition.z < -1 || crosshairPosition.z > 1;
-    x = (crosshairPosition.x * 0.5 + 0.5) * innerWidth;
-    y = (0.5 - crosshairPosition.y * 0.5) * innerHeight;
-  }
-  firstPersonCrosshair.style.left = `${x}px`;
-  firstPersonCrosshair.style.top = `${y}px`;
+  firstPersonCrosshair.hidden = !state.running || inventory.open || pauseMenu.open;
+  firstPersonCrosshair.style.left = '50%';
+  firstPersonCrosshair.style.top = '50%';
 }
 
 function animate() {
   const delta = Math.min(clock.getDelta(), 0.04);
   grassWindTime.value = clock.elapsedTime;
-  if (!inventory.open) updateGame(delta);
+  if (!inventory.open && !pauseMenu.open) updateGame(delta);
   setDefaultCameraPerspective();
   updateFirstPersonCrosshair();
   updateRockProgress();
@@ -3480,7 +3961,10 @@ window.addEventListener('mousemove', (event) => {
   if (document.pointerLockElement === canvas) moveWithMouse(event);
 });
 document.addEventListener('pointerlockchange', () => {
-  if (document.pointerLockElement !== canvas) state.laserActive = false;
+  if (document.pointerLockElement !== canvas) {
+    state.laserActive = false;
+    if (state.running && state.firstPerson && !inventory.open && !pauseMenu.open) openPauseMenu();
+  }
 });
 window.addEventListener('pointerdown', (event) => setLaserActive(event, true));
 window.addEventListener('pointerup', (event) => setLaserActive(event, false));
@@ -3492,6 +3976,13 @@ window.addEventListener('blur', () => {
 });
 window.addEventListener('keydown', (event) => {
   const key = event.code === 'Space' ? 'space' : event.key.toLowerCase();
+  if (event.key === 'Escape') {
+    if (inventory.open || pauseMenu.open) return;
+    event.preventDefault();
+    if (!event.repeat) openPauseMenu();
+    return;
+  }
+  if (pauseMenu.open) return;
   if (event.code === 'KeyE') {
     event.preventDefault();
     if (!event.repeat) {
@@ -3503,12 +3994,13 @@ window.addEventListener('keydown', (event) => {
         activeKeys.clear();
         updateMovementInputs();
         if (document.pointerLockElement === canvas) document.exitPointerLock();
+        updateInventoryResources();
         inventory.showModal();
       }
     }
     return;
   }
-  if (inventory.open) return;
+  if (inventory.open || pauseMenu.open) return;
   if (key === 'p' && !event.repeat) {
     if (!state.firstPerson && isPlayerStandingStill()) {
       state.faceYaw = state.cameraOrbitYaw;
@@ -3556,8 +4048,31 @@ document.querySelector('#inventory-close').addEventListener('click', () => inven
 inventory.addEventListener('close', () => {
   if (state.firstPerson && state.running) captureFirstPersonMouse();
 });
+pauseMenu.addEventListener('close', () => {
+  if (pausedAt !== null) dayStartedAt += performance.now() - pausedAt;
+  pausedAt = null;
+  if (state.running && state.firstPerson) captureFirstPersonMouse();
+});
+document.querySelector('#resume-button').addEventListener('click', () => pauseMenu.close());
+document.querySelector('#save-button').addEventListener('click', saveGame);
+document.querySelector('#quit-button').addEventListener('click', () => {
+  if (!saveGame()) return;
+  state.running = false;
+  state.best = Math.max(state.best, Math.floor(state.score));
+  localStorage.setItem('orbital-drift-best', String(state.best));
+  pauseMenu.close();
+  document.querySelector('#app').classList.remove('is-playing', 'is-first-person');
+  overlayTitle.textContent = 'Rust Mesa';
+  overlayCopy.textContent = 'Spiel gespeichert und beendet. Du kannst deinen Spielstand später laden.';
+  startButton.textContent = 'Neues Spiel';
+  overlay.classList.add('visible');
+  updateHud();
+});
+loadButton.addEventListener('click', loadGame);
+refreshLoadButton();
 startButton.addEventListener('click', resetGame);
 
 resize();
+sandworm.reset(ship.position, state.faceYaw);
 overlay.classList.add('visible');
 animate();
