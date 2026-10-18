@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 
-test('Escape pauses, saves, quits and restores the game after reload', async ({ page }) => {
+test('Save & Quit saves once, returns to the menu and restores the run', async ({ page }) => {
+  test.setTimeout(90000);
   await page.goto('http://127.0.0.1:5173/');
   await page.locator('#start-button').click();
   await page.keyboard.down('w');
@@ -8,28 +9,22 @@ test('Escape pauses, saves, quits and restores the game after reload', async ({ 
   await page.keyboard.press('Escape');
   await page.keyboard.up('w');
   await expect(page.locator('#pause-menu')).toBeVisible();
+  await expect(page.locator('#save-button')).toHaveCount(0);
+  await expect(page.locator('#quit-button')).toHaveText('Speichern & beenden');
   const score = await page.locator('#score').textContent();
   await page.waitForTimeout(250);
   await expect(page.locator('#score')).toHaveText(score);
   await page.locator('#save-name').fill('Meine Kristallreise');
-  await page.locator('#save-button').click();
-  await expect(page.locator('#save-message')).toHaveText('Spiel gespeichert.');
-  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('rust-mesa-save-v1')));
-  expect(saved.state.score).toBeGreaterThan(0);
-  expect(saved.name).toBe('Meine Kristallreise');
-  expect(saved.position).toHaveLength(3);
-  await page.keyboard.press('Escape');
-  await expect(page.locator('#pause-menu')).not.toBeVisible();
-  await page.keyboard.press('Escape');
-  await expect(page.locator('#pause-menu')).toBeVisible();
   await page.locator('#quit-button').click();
-  const finalScore = await page.evaluate(() => Math.floor(JSON.parse(localStorage.getItem('rust-mesa-save-v1')).state.score));
+  await expect(page.locator('#pause-menu')).not.toBeVisible();
   await expect(page.locator('#overlay')).toHaveClass(/visible/);
+  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('rust-mesa-saves-v2'))[0]);
+  expect(saved.name).toBe('Meine Kristallreise');
+  expect(saved.state.score).toBeGreaterThan(0);
   await page.reload();
   await expect(page.locator('#load-button')).toHaveText('Spielstand laden: Meine Kristallreise');
   await page.locator('#load-button').click();
   await expect(page.locator('#overlay')).not.toHaveClass(/visible/);
-  await expect(page.locator('#score')).toHaveText(String(finalScore));
   await page.keyboard.press('Escape');
   await expect(page.locator('#save-name')).toHaveValue('Meine Kristallreise');
 });

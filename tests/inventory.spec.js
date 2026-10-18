@@ -8,7 +8,7 @@ for (const width of [1440, 390]) {
     await page.keyboard.press('e');
     const inventory = page.locator('#inventory');
     await expect(inventory).toBeVisible();
-    await expect(page.locator('.equipment-card')).toHaveCount(2);
+    await expect(page.locator('.equipment-card')).toHaveCount(3);
     await expect(page.locator('.stone-thumbnail')).toHaveCount(2);
     await expect(page.locator('#inventory-total')).toHaveText('0 gesammelt');
     expect(await inventory.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);

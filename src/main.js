@@ -1,7 +1,12 @@
 import './styles.css';
+import { baseLocation, baseLayout, createPlanetaryBase, catalog, purchase, positionBaseCamera } from './base.js';
+import { readSaves, writeSave, deleteSave } from './saves.js';
+import { setupLanguage } from './language.js';
+setupLanguage();
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { createSandworm } from './sandworm.js';
+import { createCurseMessage } from './curse-message.js';
 
 const canvas = document.querySelector('#game-canvas');
 const firstPersonCrosshair = document.querySelector('#first-person-crosshair');
@@ -9,6 +14,8 @@ const rockProgress = document.querySelector('#rock-progress');
 const rockTime = document.querySelector('#rock-time');
 const rockDamage = document.querySelector('#rock-damage');
 const rockDestructionTime = 1.5;
+const laserRange = 320;
+const laserShotSpeed = 34;
 const laserShotDamage = 0.06;
 const laserShotInterval = 0.12;
 let damagedRock = null;
@@ -17,6 +24,8 @@ const rockProgressBounds = new THREE.Box3();
 const rockProgressPosition = new THREE.Vector3();
 const scoreEl = document.querySelector('#score');
 const bestEl = document.querySelector('#best');
+const healthEl = document.querySelector('#health');
+const healthBar = document.querySelector('#health-bar');
 const overlay = document.querySelector('#overlay');
 const overlayTitle = document.querySelector('#overlay-title');
 const overlayCopy = document.querySelector('#overlay-copy');
@@ -25,14 +34,26 @@ const leftControl = document.querySelector('#left-control');
 const rightControl = document.querySelector('#right-control');
 const inventory = document.querySelector('#inventory');
 const pauseMenu = document.querySelector('#pause-menu');
+const tradeMenu = document.querySelector('#trade-menu');
+const terminalHint = document.querySelector('#terminal-hint');
 const loadButton = document.querySelector('#load-button');
 const saveMessage = document.querySelector('#save-message');
 const saveNameInput = document.querySelector('#save-name');
-const saveKey = 'rust-mesa-save-v1';
+const saveSlot = document.querySelector('#save-slot');
+const loadSlot = document.querySelector('#load-slot');
+const deleteDialog = document.querySelector('#delete-save-dialog');
+let pendingDeleteSlot = null;
+let activeSaveSlot = 0;
+let seatedBench = null;
+let isSleeping = false;
+let sleepTimer = null;
+let sleepFade = null;
+const sleepOverlay = document.querySelector('#sleep-overlay');
+const curseMessage = createCurseMessage(document.querySelector('#curse-message'));
 let pausedAt = null;
 
 function openPauseMenu() {
-  if (!state.running || pauseMenu.open) return;
+  if (!state.running || pauseMenu.open || isSleeping) return;
   pausedAt = performance.now();
   state.laserActive = false;
   state.jetpackActive = false;
@@ -41,18 +62,46 @@ function openPauseMenu() {
   state.mouseMoveUntil = 0;
   activeKeys.clear();
   updateMovementInputs();
+  const messageList = document.querySelector('#game-message-list');
+  messageList.replaceChildren();
+  const hasMessage = curseMessage.isShown();
+  document.querySelector('#game-messages-empty').hidden = hasMessage;
+  if (hasMessage) {
+    const entry = document.createElement('li');
+    entry.textContent = document.querySelector('#curse-message').textContent;
+    messageList.append(entry);
+  }
   pauseMenu.showModal();
   if (document.pointerLockElement === canvas) document.exitPointerLock();
 }
 
 function refreshLoadButton() {
   try {
-    const saved = JSON.parse(localStorage.getItem(saveKey));
-    loadButton.hidden = !saved;
-    const name = typeof saved?.name === 'string' ? saved.name : 'Mein Spielstand';
-    loadButton.textContent = `Spielstand laden: ${name}`;
+    const saves = readSaves(localStorage);
+    const previousLoad = loadSlot.value;
+    const previousSave = saveSlot.value;
+    saveSlot.replaceChildren();
+    loadSlot.replaceChildren();
+    saves.forEach((saved, index) => {
+      const label = `${index + 1} · ${saved?.name || (document.documentElement.lang === 'en' ? 'Empty' : 'Leer')}`;
+      saveSlot.add(new Option(label, String(index)));
+      if (saved) loadSlot.add(new Option(label, String(index)));
+    });
+    if (previousSave !== '') saveSlot.value = previousSave;
+    if (previousLoad !== '' && saves[Number(previousLoad)]) loadSlot.value = previousLoad;
+    loadButton.hidden = loadSlot.hidden = !saves.some(Boolean);
+    document.querySelector('#load-slot-label').hidden = loadSlot.hidden;
+    document.querySelector('#load-delete-hint').hidden = loadSlot.hidden;
+    updateLoadButton();
+  } catch {
+    loadButton.hidden = loadSlot.hidden = true;
+    document.querySelector('#load-slot-label').hidden = true;
   }
-  catch { loadButton.hidden = true; }
+}
+
+function updateLoadButton() {
+  const saved = readSaves(localStorage)[Number(loadSlot.value)];
+  loadButton.textContent = saved ? `Spielstand laden: ${saved.name}` : 'Spielstand laden';
 }
 
 function saveGame() {
@@ -60,17 +109,24 @@ function saveGame() {
     const name = saveNameInput.value.trim().slice(0, 60) || 'Mein Spielstand';
     saveNameInput.value = name;
     const savedState = {};
-    for (const key of ['score', 'stones', 'crystals', 'elapsed', 'flightHeight', 'flightVelocity',
+    for (const key of ['health', 'score', 'stones', 'crystals', 'laserLevel', 'jetpackLevel', 'elapsed', 'flightHeight', 'flightVelocity',
       'faceYaw', 'cameraOrbitYaw', 'cameraPitch', 'firstPerson', 'weaponMode']) savedState[key] = state[key];
-    localStorage.setItem(saveKey, JSON.stringify({
+    const selectedSlot = activeSaveSlot;
+    writeSave(localStorage, selectedSlot, {
       version: 1,
       name,
       state: savedState,
-      position: ship.position.toArray(),
+      sandwormRepelled: sandworm.isRepelled(),
+      curseMessageSeen: curseMessage.isShown(),
+      sandwormWeakPoint: sandworm.getWeakPointProgress(),
+      position: (seatedBench ? seatedBench.stand : ship.position).toArray(),
       dayElapsed: ((pausedAt ?? performance.now()) - dayStartedAt) / 1000,
       rocks: rocks.map((rock) => ({ position: rock.position.toArray(), damage: rock.userData.laserDamage || 0 })),
-    }));
+    });
     refreshLoadButton();
+    saveSlot.value = String(selectedSlot);
+    loadSlot.value = String(selectedSlot);
+    updateLoadButton();
     saveMessage.textContent = 'Spiel gespeichert.';
     return true;
   } catch {
@@ -81,16 +137,22 @@ function saveGame() {
 
 function loadGame() {
   try {
-    const saved = JSON.parse(localStorage.getItem(saveKey));
+    const selectedSlot = Number(loadSlot.value);
+    const saved = readSaves(localStorage)[selectedSlot];
     if (saved?.version !== 1 || !saved.state || !Array.isArray(saved.position)
       || saved.position.length !== 3 || !saved.position.every(Number.isFinite)
       || !Number.isFinite(saved.dayElapsed)) throw new Error('Invalid save');
     resetGame();
+    activeSaveSlot = selectedSlot;
+    saveSlot.value = String(selectedSlot);
     saveNameInput.value = typeof saved.name === 'string' ? saved.name.slice(0, 60) : 'Mein Spielstand';
-    for (const key of ['score', 'stones', 'crystals', 'elapsed', 'flightHeight', 'flightVelocity',
+    for (const key of ['health', 'score', 'stones', 'crystals', 'laserLevel', 'jetpackLevel', 'elapsed', 'flightHeight', 'flightVelocity',
       'faceYaw', 'cameraOrbitYaw', 'cameraPitch']) {
       if (Number.isFinite(saved.state[key])) state[key] = saved.state[key];
     }
+    state.health = THREE.MathUtils.clamp(state.health, 1, 100);
+    state.laserLevel = Math.floor(THREE.MathUtils.clamp(state.laserLevel, 0, 3));
+    state.jetpackLevel = Math.floor(THREE.MathUtils.clamp(state.jetpackLevel, 0, 2));
     state.firstPerson = saved.state.firstPerson === true;
     state.weaponMode = saved.state.weaponMode === 'shots' ? 'shots' : 'beam';
     ship.position.fromArray(saved.position);
@@ -98,6 +160,12 @@ function loadGame() {
     dayStartedAt = performance.now() - saved.dayElapsed * 1000;
     updateTerrainAroundPlayer();
     resetSceneryAroundPlayer();
+    sandworm.restoreWeakPointProgress(saved.sandwormWeakPoint);
+    if (saved.curseMessageSeen === true) curseMessage.remember();
+    if (saved.sandwormRepelled === true) {
+      sandworm.repel(true);
+      curseMessage.showOnce();
+    }
     saved.rocks?.forEach((entry, index) => {
       if (rocks[index] && Array.isArray(entry.position) && entry.position.every(Number.isFinite)) {
         rocks[index].position.fromArray(entry.position);
@@ -114,20 +182,25 @@ function loadGame() {
 
 const playerMovement = {
   startZ: 2.15,
-  lateralSpeed: 8.1,
-  depthSpeed: 4.6,
-  sprintMultiplier: 1.72,
+  lateralSpeed: 6.0,
+  depthSpeed: 4.0,
+  sprintMultiplier: 1.5,
   jetpackLift: 9.5,
   jetpackGravity: 9.504,
   jetpackMaxHeight: 9.68,
-  acceleration: 8.5,
+  acceleration: 5.5,
   deceleration: 5.2,
 };
 const state = {
   running: false,
+  health: 100,
+  hurtCooldown: 0,
+  hurtFlash: 0,
   score: 0,
   stones: 0,
   crystals: 0,
+  laserLevel: 0,
+  jetpackLevel: 0,
   best: Number(localStorage.getItem('orbital-drift-best') || 0),
   speed: 13.5,
   elapsed: 0,
@@ -210,7 +283,9 @@ function terrainHeight(x, z) {
   const fineRipples = Math.sin(x * 0.52 + fbm(x * 0.3, z * 0.3) * 4.0) * 0.045;
   const windRipple = Math.sin(x * 1.35 + z * 0.18) * Math.cos(z * 0.92) * 0.018;
   const compactedSoil = (smoothNoise(x * 0.11 - 21, z * 0.11 + 13) - 0.5) * 0.07;
-  return broadUndulation + crust + occasionalHill + crackedCrust + fineRipples + windRipple + compactedSoil - 1.05;
+  const naturalHeight = broadUndulation + crust + occasionalHill + crackedCrust + fineRipples + windRipple + compactedSoil - 1.05;
+  const baseBlend = 1 - THREE.MathUtils.smoothstep(Math.hypot(x - baseLocation.x, z - baseLocation.z), 10 * baseLayout.scale, 18 * baseLayout.scale);
+  return THREE.MathUtils.lerp(naturalHeight, baseLocation.ground, baseBlend);
 }
 
 const renderer = new THREE.WebGLRenderer({
@@ -295,6 +370,7 @@ const skyDome = new THREE.Mesh(
       groundGlow: { value: new THREE.Color(0xba8165) },
       nightStrength: { value: 0 },
       starTime: { value: 0 },
+      starAngle: { value: 0 },
       sunDirection: { value: sunDirection },
       dawnStrength: { value: 0 },
     },
@@ -312,6 +388,7 @@ const skyDome = new THREE.Mesh(
       uniform vec3 groundGlow;
       uniform float nightStrength;
       uniform float starTime;
+      uniform float starAngle;
       uniform vec3 sunDirection;
       uniform float dawnStrength;
       float starHash(vec2 cell) {
@@ -326,11 +403,23 @@ const skyDome = new THREE.Mesh(
         float sunAngle = acos(sunAlignment);
         float dawnGlow = exp(-sunAngle * sunAngle / 0.24)
           * exp(-abs(h) * 6.0) * dawnStrength;
+        // Keep sunrise/sunset colors on the sun's side of the horizon.
+        vec2 horizonSun = sunDirection.xz / max(length(sunDirection.xz), 0.0001);
+        vec2 horizonView = direction.xz / max(length(direction.xz), 0.0001);
+        float sunSide = pow(max(dot(horizonSun, horizonView), 0.0), 4.0);
+        float horizonWarmth = sunSide * exp(-abs(h) * 6.0) * dawnStrength;
+        sky = mix(sky, vec3(0.82, 0.29, 0.1), horizonWarmth * 0.55);
         sky += vec3(0.95, 0.23, 0.055) * dawnGlow * 0.65;
-        // Fixed celestial coordinates keep the stars stable while the player walks.
+        // Rotate the celestial sphere with the day/night cycle around a tilted pole.
+        // Only the stars move; the horizon and dawn glow stay in world coordinates.
+        vec3 pole = vec3(0.0, 0.8, 0.6);
+        float c = cos(starAngle);
+        float s = sin(starAngle);
+        vec3 starDirection = direction * c + cross(pole, direction) * s
+          + pole * dot(pole, direction) * (1.0 - c);
         vec2 starGrid = vec2(
-          atan(direction.z, direction.x) / 6.2831853 + 0.5,
-          asin(clamp(h, -1.0, 1.0)) / 3.1415927 + 0.5
+          atan(starDirection.z, starDirection.x) / 6.2831853 + 0.5,
+          asin(clamp(starDirection.y, -1.0, 1.0)) / 3.1415927 + 0.5
         ) * vec2(180.0, 90.0);
         vec2 cell = floor(starGrid);
         float seed = starHash(cell);
@@ -439,13 +528,15 @@ function updateSunAndKeyLight() {
   const sky = skyDome.material.uniforms;
   sky.nightStrength.value = 1 - THREE.MathUtils.smoothstep(sunDirection.y, -0.25, 0.02);
   sky.starTime.value = elapsedSeconds;
+  sky.starAngle.value = sunAngle;
+  visorMaterial.envMapIntensity = THREE.MathUtils.lerp(0.85, 0.4, sky.nightStrength.value);
   sky.dawnStrength.value = sunset;
   sky.topColor.value.copy(colors.nightSky).lerp(colors.daySky, upperSkyDaylight);
-  sky.horizonColor.value.copy(colors.nightHorizon).lerp(colors.dayHorizon, daylight).lerp(colors.sunset, sunset * 0.75);
+  sky.horizonColor.value.copy(colors.nightHorizon).lerp(colors.dayHorizon, daylight);
   sky.groundGlow.value.copy(colors.nightGround).lerp(colors.dayGround, daylight);
   scene.fog.color.copy(sky.horizonColor.value);
   scene.background.copy(sky.topColor.value);
-  hemi.intensity = THREE.MathUtils.lerp(0.85, 1.65, daylight);
+  hemi.intensity = THREE.MathUtils.lerp(1.1, 1.65, daylight);
   hemi.color.copy(colors.nightAmbient).lerp(colors.daySky, daylight);
   for (const material of cloudMaterials) {
     material.color.copy(colors.nightCloud).lerp(colors.dayCloud, daylight)
@@ -717,7 +808,8 @@ const materials = {
 
 const world = new THREE.Group();
 scene.add(world);
-const sandworm = createSandworm(terrainHeight);
+const planetaryBase = createPlanetaryBase(scene);
+const sandworm = createSandworm(terrainHeight, () => curseMessage.showOnce());
 world.add(sandworm.object);
 
 const rustDark = new THREE.Color(0x623727);
@@ -740,7 +832,11 @@ function updateTerrainTileGeometry(tile, centerX, centerZ) {
     const localZ = positions.getZ(i);
     const worldX = x + centerX;
     const worldZ = localZ + centerZ;
-    const height = terrainHeight(worldX, worldZ);
+    // Keep the terrain mesh below the base floor to prevent overlapping surfaces.
+    // Walking height stays on the floor through terrainHeight().
+    const baseEdge = Math.max(Math.abs(worldX - baseLocation.x), Math.abs(worldZ - baseLocation.z));
+    const floorClearance = 0.12 * (1 - THREE.MathUtils.smoothstep(baseEdge, 6.1 * baseLayout.scale, 7.1 * baseLayout.scale));
+    const height = terrainHeight(worldX, worldZ) - floorClearance;
     const wash = erosionMask(worldX, worldZ);
     positions.setY(i, height);
 
@@ -1489,8 +1585,14 @@ function findWeaponSurfaceHit(origin, direction, distance) {
   rockImpactRay.far = distance;
   for (const rock of rocks) rock.updateWorldMatrix(true, true);
   for (const tile of terrainTiles) tile.updateWorldMatrix(true, false);
-  const hit = rockImpactRay.intersectObjects([...rocks, ...terrainTiles], true)[0];
+  sandworm.object.updateWorldMatrix(true, true);
+  planetaryBase.group.updateWorldMatrix(true, true);
+  const wormTargets = sandworm.getLaserTargets();
+  const hit = rockImpactRay.intersectObjects([...rocks, ...terrainTiles, planetaryBase.group, ...wormTargets], true)[0];
   if (!hit) return null;
+  let ancestor = hit.object;
+  while (ancestor && ancestor !== sandworm.object) ancestor = ancestor.parent;
+  hit.worm = ancestor === sandworm.object;
   let rock = hit.object;
   while (rock.parent && !rocks.includes(rock)) rock = rock.parent;
   hit.rock = rocks.includes(rock) ? rock : null;
@@ -1514,11 +1616,12 @@ function emitRockImpact(hit) {
       chip.material = chip.userData.soilMaterial;
       const colors = hit.object.geometry.attributes.color;
       const { a, b, c } = hit.face;
-      chip.material.color.setRGB(
+      if (colors) chip.material.color.setRGB(
         (colors.getX(a) + colors.getX(b) + colors.getX(c)) / 3,
         (colors.getY(a) + colors.getY(b) + colors.getY(c)) / 3,
         (colors.getZ(a) + colors.getZ(b) + colors.getZ(c)) / 3,
       );
+      else chip.material.color.copy(hit.object.material.color || rustBase);
     }
     chip.position.copy(hit.point).addScaledVector(rockImpactNormal, 0.025);
     chip.scale.setScalar(THREE.MathUtils.randFloat(0.12, 0.3));
@@ -1788,6 +1891,37 @@ const visorMaterial = new THREE.MeshPhysicalMaterial({
   envMap: visorEnvironment, envMapIntensity: 0.85,
 });
 
+
+// Sample the same moving star field as the sky using the visor's reflected view.
+visorMaterial.onBeforeCompile = (shader) => {
+  const sky = skyDome.material.uniforms;
+  shader.uniforms.nightStrength = sky.nightStrength;
+  shader.uniforms.starTime = sky.starTime;
+  shader.uniforms.starAngle = sky.starAngle;
+  const skySource = skyDome.material.fragmentShader;
+  const starField = skySource.slice(skySource.indexOf('// Rotate the celestial sphere'),
+    skySource.indexOf('        sky += starColor'))
+    .replace('float radius = mix(0.045, 0.12,', 'float radius = 1.5 * mix(0.045, 0.12,');
+  shader.fragmentShader = shader.fragmentShader.replace('#include <common>', `
+    #include <common>
+    uniform float nightStrength;
+    uniform float starTime;
+    uniform float starAngle;
+    float starHash(vec2 cell) {
+      return fract(sin(dot(cell, vec2(127.1, 311.7))) * 43758.5453);
+    }
+  `).replace('#include <emissivemap_fragment>', `
+    #include <emissivemap_fragment>
+    {
+      vec3 direction = inverseTransformDirection(reflect(-normalize(vViewPosition), normal), viewMatrix);
+      float h = direction.y;
+      ${starField}
+      totalEmissiveRadiance += starColor * stars * 3.5;
+    }
+  `);
+};
+visorMaterial.customProgramCacheKey = () => 'visor-moving-star-reflection-v2';
+
 const ship = new THREE.Group();
 ship.scale.setScalar(0.8778);
 ship.rotation.y = state.faceYaw;
@@ -1851,12 +1985,48 @@ controlPlate.position.set(-0.04, 0.32, 0.392);
 controlPlate.castShadow = true;
 ship.add(controlPlate);
 
-const chestLight = new THREE.Mesh(
-  new THREE.SphereGeometry(0.06, 12, 8),
-  new THREE.MeshStandardMaterial({ color: 0x77f8ff, emissive: 0x2dd6ff, emissiveIntensity: 1.2, roughness: 0.2 }),
+const chestFlashlight = new THREE.Group();
+chestFlashlight.position.set(0.18, 0.35, 0.44);
+const flashlightHousing = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.075, 0.085, 0.13, 20), materials.metalTrim,
 );
-chestLight.position.set(0.18, 0.35, 0.42);
-ship.add(chestLight);
+flashlightHousing.rotation.x = Math.PI / 2;
+chestFlashlight.add(flashlightHousing);
+const flashlightLensMaterial = new THREE.MeshStandardMaterial({
+  color: 0xffedc7, emissive: 0xffe3a3, emissiveIntensity: 0, roughness: 0.15,
+});
+const flashlightLens = new THREE.Mesh(new THREE.CircleGeometry(0.061, 24), flashlightLensMaterial);
+flashlightLens.position.z = 0.067;
+chestFlashlight.add(flashlightLens);
+ship.add(chestFlashlight);
+// Keep the light outside the body so it also works with the hidden first-person suit.
+const chestFlashlightBeam = new THREE.SpotLight(0xffedcc, 0, 65, Math.PI / 7, 0.65, 2);
+scene.add(chestFlashlightBeam, chestFlashlightBeam.target);
+// Soft spill from the chest lamp lights the nearby weapon as well as the ground.
+const chestFlashlightSpill = new THREE.PointLight(0xffedcc, 0, 2.5, 2);
+scene.add(chestFlashlightSpill);
+const flashlightForward = new THREE.Vector3();
+
+function updateChestFlashlight() {
+  const darkness = skyDome.material.uniforms.nightStrength.value;
+  const brightness = state.running ? THREE.MathUtils.smoothstep(darkness, 0.1, 0.7) : 0;
+  chestFlashlightBeam.intensity = brightness * 500;
+  chestFlashlightSpill.intensity = brightness * 2.5;
+  flashlightLensMaterial.emissiveIntensity = brightness * 2.5;
+  if (brightness === 0) return;
+  chestFlashlight.updateWorldMatrix(true, false);
+  chestFlashlight.localToWorld(chestFlashlightBeam.position.set(0, 0, 0.09));
+  flashlightForward.set(Math.sin(state.faceYaw), 0, Math.cos(state.faceYaw));
+  chestFlashlightBeam.target.position.copy(chestFlashlightBeam.position).addScaledVector(flashlightForward, 24);
+  const target = chestFlashlightBeam.target.position;
+  // Aim relative to the lamp so the beam rises with the explorer in flight.
+  target.y = chestFlashlightBeam.position.y - 1.2;
+  if (state.firstPerson) {
+    chestFlashlightBeam.position.addScaledVector(flashlightForward, -2.0);
+  }
+  chestFlashlightSpill.position.copy(chestFlashlightBeam.position);
+  chestFlashlightBeam.target.updateMatrixWorld();
+}
 
 for (const [x, y, color] of [
   [-0.13, 0.36, 0x2dd6ff],
@@ -2142,7 +2312,7 @@ function addRingDetail(parent, radius, y, material, thickness = 0.009) {
   return ring;
 }
 
-const laserBeamGeometry = new THREE.CylinderGeometry(0.031185, 0.054054, 88, 32, 1, false);
+const laserBeamGeometry = new THREE.CylinderGeometry(0.031185, 0.054054, laserRange, 32, 1, false);
 laserBeamGeometry.rotateX(Math.PI / 2);
 let handLaser = null;
 const laserBaseRotation = new THREE.Euler(0.14, -0.06, -0.1);
@@ -2159,7 +2329,7 @@ const laserForwardBasis = new THREE.Vector3(0, 0, 1);
 const laserBeamOrigin = new THREE.Vector3();
 const laserBeamDirection = new THREE.Vector3();
 const laserAimRay = new THREE.Raycaster();
-laserAimRay.far = 96;
+laserAimRay.far = laserRange;
 const laserAimScreen = new THREE.Vector2();
 const laserAimTarget = new THREE.Vector3();
 const laserAimLocal = new THREE.Vector3();
@@ -2169,7 +2339,7 @@ const rockHitOffset = new THREE.Vector3();
 const rockFragmentVelocity = new THREE.Vector3();
 let rockFragmentIndex = 0;
 
-for (let i = 0; i < 34; i += 1) {
+for (let i = 0; i < Math.ceil(laserRange / laserShotSpeed / laserShotInterval) + 2; i += 1) {
   const shot = new THREE.Group();
   const core = new THREE.Mesh(laserShotCoreGeometry, materials.laserShotCore.clone());
   const trail = new THREE.Mesh(laserShotTrailGeometry, materials.laserShot.clone());
@@ -2722,13 +2892,17 @@ function getRockDestructionTime(rock) {
 }
 
 function damageRock(rock, amount) {
+  amount *= 1 + state.laserLevel * 0.35;
   const duration = getRockDestructionTime(rock);
   rock.userData.laserDamage = Math.min(duration, (rock.userData.laserDamage || 0) + amount);
   damagedRock = rock;
   lastRockHitTime = performance.now();
   if (rock.userData.laserDamage >= duration - 0.00001) {
     const isCrystal = rock.userData.isCrystal === true;
-    if (isCrystal) state.crystals += 1;
+    if (isCrystal) {
+      state.crystals += 1;
+      sandworm.awaken(state.crystals, ship.position, state.faceYaw);
+    }
     else state.stones += 1;
     updateInventoryResources();
     shatterRock(rock, rock.position);
@@ -2754,7 +2928,7 @@ function updateRockProgress() {
   rockProgress.style.left = `${(rockProgressPosition.x * 0.5 + 0.5) * innerWidth}px`;
   rockProgress.style.top = `${(0.5 - rockProgressPosition.y * 0.5) * innerHeight}px`;
   const damage = damagedRock.userData.laserDamage || 0;
-  const rate = state.weaponMode === 'shots' ? laserShotDamage / laserShotInterval : 1;
+  const rate = (state.weaponMode === 'shots' ? laserShotDamage / laserShotInterval : 1) * (1 + state.laserLevel * 0.35);
   const duration = getRockDestructionTime(damagedRock);
   const remaining = Math.max(0, duration - damage) / rate;
   rockTime.textContent = `${remaining.toFixed(1).replace('.', ',')} s`;
@@ -2874,8 +3048,19 @@ function updateRockFragments(delta) {
   }
 }
 
+function isInsideBaseBuilding() {
+  return planetaryBase.inside(ship.position) && ship.position.y < baseLocation.ground + baseLayout.height;
+}
+
 function updateLaser(delta) {
   if (!handLaser) return;
+  const indoors = isInsideBaseBuilding();
+  if (indoors) {
+    state.laserActive = false;
+    handLaser.visibleUntil = 0;
+    handLaser.beam.visible = handLaser.muzzleFlash.visible = false;
+    handLaser.beam.material.opacity = 0;
+  }
   const now = performance.now();
   if (!state.firstPerson || !state.running) handLaser.visibleUntil = 0;
   else if (state.laserActive) handLaser.visibleUntil = now + 5000;
@@ -2918,17 +3103,17 @@ function updateLaser(delta) {
     handLaser.group.quaternion.slerp(laserRestQuaternion, 1 - Math.exp(-5 * delta));
   }
 
-  handLaser.canFire = true;
-  let beamLength = 88;
+  handLaser.canFire = !indoors;
+  let beamLength = laserRange;
   if (!state.firstPerson && state.running && state.laserActive) {
     setDefaultCameraPerspective();
     camera.updateMatrixWorld(true);
     laserAimScreen.set(state.aimX * 2 - 1, 1 - state.aimY * 2);
     laserAimRay.setFromCamera(laserAimScreen, camera);
     world.updateMatrixWorld(true);
-    const hits = laserAimRay.intersectObjects([...terrainTiles, ...rocks, ...mountains], true);
+    const hits = laserAimRay.intersectObjects([...terrainTiles, ...rocks, ...mountains, planetaryBase.group, ...sandworm.getLaserTargets()], true);
     if (hits.length) laserAimTarget.copy(hits[0].point);
-    else laserAimRay.ray.at(88, laserAimTarget);
+    else laserAimRay.ray.at(laserRange, laserAimTarget);
 
     // Keep aiming within the forward hemisphere of the character.
     const targetX = laserAimTarget.x - ship.position.x;
@@ -2965,7 +3150,7 @@ function updateLaser(delta) {
   // Preserve the last beam transform while fading out or aiming behind the player.
   // Resetting it here used to visibly snap the beam back to the barrel axis.
   if (state.running && state.laserActive && handLaser.canFire) {
-    handLaser.beam.scale.set(1, 1, beamLength / 88);
+    handLaser.beam.scale.set(1, 1, beamLength / laserRange);
     if (state.firstPerson) {
       handLaser.beam.quaternion.identity();
       handLaser.beam.position.set(0, 0.018, 0.55 + beamLength / 2);
@@ -2987,9 +3172,9 @@ function updateLaser(delta) {
     handLaser.group.localToWorld(laserBeamOrigin.set(0, 0.018, 0.58));
     laserBeamDirection.copy(laserForwardLocal).transformDirection(handLaser.group.matrixWorld).normalize();
     if (!state.firstPerson) laserBeamDirection.copy(laserAimTarget).sub(laserBeamOrigin).normalize();
-    const hit = findWeaponSurfaceHit(laserBeamOrigin, laserBeamDirection, 96);
+    const hit = findWeaponSurfaceHit(laserBeamOrigin, laserBeamDirection, laserRange);
     if (hit) {
-      if (state.beamHitCooldown <= 0) {
+      if (state.beamHitCooldown <= 0 && !hit.worm) {
         emitRockImpact(hit);
         state.beamHitCooldown = 0.065;
       }
@@ -3000,15 +3185,16 @@ function updateLaser(delta) {
       const length = laserAimLocal.length();
       laserAimLocal.normalize();
       handLaser.beam.quaternion.setFromUnitVectors(laserForwardLocal, laserAimLocal);
-      handLaser.beam.scale.z = length / 88;
+      handLaser.beam.scale.z = length / laserRange;
       handLaser.beam.position.set(0, 0.018, 0.55).addScaledVector(laserAimLocal, length / 2);
+      if (hit.worm) sandworm.hitLaser(hit.object, 'beam');
       if (hit.rock) damageRock(hit.rock, delta);
     }
   }
 }
 
 function emitLaserShot() {
-  if (!handLaser || !handLaser.canFire) return;
+  if (!handLaser || !handLaser.canFire || isInsideBaseBuilding()) return;
   handLaser.group.updateMatrixWorld(true);
   handLaser.group.localToWorld(laserMuzzleWorld.set(0, 0.018, 0.58));
   laserShotDirection.copy(laserForwardLocal).transformDirection(handLaser.group.matrixWorld).normalize();
@@ -3021,8 +3207,8 @@ function emitLaserShot() {
   shot.quaternion.setFromUnitVectors(laserForwardBasis, laserShotDirection);
   shot.visible = true;
   shot.userData.age = 0;
-  shot.userData.lifetime = 5.4;
-  shot.userData.velocity.copy(laserShotDirection).multiplyScalar(34);
+  shot.userData.lifetime = laserRange / laserShotSpeed;
+  shot.userData.velocity.copy(laserShotDirection).multiplyScalar(laserShotSpeed);
   shot.userData.core.material.opacity = 1;
   shot.userData.trail.material.opacity = 0.58;
   shot.userData.halo.material.opacity = 0.18;
@@ -3055,7 +3241,8 @@ function updateLaserShots(delta) {
     shot.userData.halo.material.opacity = 0.18 * fade * pulse;
     const hit = findWeaponSurfaceHit(shotPreviousPosition, laserShotTarget, shot.userData.velocity.length() * delta);
     if (hit) {
-      emitRockImpact(hit);
+      if (hit.worm) sandworm.hitLaser(hit.object);
+      else emitRockImpact(hit);
       if (hit.rock) damageRock(hit.rock, laserShotDamage);
       shot.visible = false;
       continue;
@@ -3188,10 +3375,30 @@ function updateFootEffects(delta) {
 const clock = new THREE.Clock();
 
 function resetGame() {
+  clearTimeout(sleepTimer);
+  sleepTimer = null;
+  sleepFade?.cancel();
+  sleepFade = null;
+  isSleeping = false;
+  sleepOverlay.hidden = true;
+  seatedBench = null;
+  curseMessage.reset();
+  state.health = 100;
+  state.hurtCooldown = 0;
+  state.hurtFlash = 0;
+  document.querySelector('#app').style.setProperty('--hurt-opacity', 0);
   saveNameInput.value = 'Mein Spielstand';
+  refreshLoadButton();
+  try {
+    const emptySlot = readSaves(localStorage).findIndex((saved) => !saved);
+    activeSaveSlot = emptySlot < 0 ? 0 : emptySlot;
+    saveSlot.value = String(activeSaveSlot);
+  } catch { /* Saving reports storage errors in the pause menu. */ }
   dayStartedAt = performance.now();
   state.stones = 0;
   state.crystals = 0;
+  state.laserLevel = 0;
+  state.jetpackLevel = 0;
   updateInventoryResources();
   damagedRock = null;
   for (const rock of rocks) rock.userData.laserDamage = 0;
@@ -3238,19 +3445,25 @@ function resetGame() {
   updateHud();
 }
 
-function gameOver() {
+function gameOver(reason) {
+  state.laserActive = false;
+  state.jetpackActive = false;
+  activeKeys.clear();
+  if (document.pointerLockElement === canvas) document.exitPointerLock();
   state.running = false;
   document.querySelector('#app').classList.remove('is-playing');
   state.best = Math.max(state.best, Math.floor(state.score));
   localStorage.setItem('orbital-drift-best', String(state.best));
   overlayTitle.textContent = 'Run ended';
-  overlayCopy.textContent = `Score ${Math.floor(state.score)}. Launch again and push the run further.`;
+  overlayCopy.textContent = reason || `Score ${Math.floor(state.score)}. Launch again and push the run further.`;
   startButton.textContent = 'Restart';
   overlay.classList.add('visible');
   updateHud();
 }
 
 function updateHud() {
+  healthEl.textContent = String(state.health);
+  healthBar.value = state.health;
   scoreEl.textContent = String(Math.floor(state.score));
   bestEl.textContent = String(state.best);
 }
@@ -3301,29 +3514,36 @@ function updateJetpack(delta) {
   if (state.flightHeight <= 0) {
     state.flightHeight = 0;
     state.flightVelocity = Math.max(0, state.flightVelocity);
-  } else if (state.flightHeight >= playerMovement.jetpackMaxHeight) {
-    state.flightHeight = playerMovement.jetpackMaxHeight;
+  } else if (state.flightHeight >= (playerMovement.jetpackMaxHeight + state.jetpackLevel * 3)) {
+    state.flightHeight = playerMovement.jetpackMaxHeight + state.jetpackLevel * 3;
     state.flightVelocity = Math.min(0, state.flightVelocity);
   }
 }
 
+function minimumCameraPitch() {
+  const airborne = THREE.MathUtils.smoothstep(state.flightHeight, 0.1, 1);
+  return THREE.MathUtils.lerp(-Math.PI / 3, -Math.PI / 2, airborne);
+}
+
 function setDefaultCameraPerspective() {
+  // Restore the ground limit on landing, even without another mouse movement.
+  state.cameraPitch = THREE.MathUtils.clamp(state.cameraPitch, minimumCameraPitch(), Math.PI / 2);
+  // The first-person laser is attached to the camera, outside the hidden body.
+  ship.visible = !state.firstPerson;
   for (const part of bodyRig.headParts) {
     part.mesh.visible = !state.firstPerson;
   }
   if (state.firstPerson) {
-    const forwardX = Math.sin(state.faceYaw);
-    const forwardZ = Math.cos(state.faceYaw);
+    const viewYaw = seatedBench ? state.cameraOrbitYaw : state.faceYaw;
+    const forwardX = Math.sin(viewYaw);
+    const forwardZ = Math.cos(viewYaw);
     camera.position.set(
       ship.position.x + forwardX * 0.48,
       ship.position.y + 1.25,
       ship.position.z + forwardZ * 0.48,
     );
-    camera.lookAt(
-      camera.position.x + forwardX * Math.cos(state.cameraPitch),
-      camera.position.y + Math.sin(state.cameraPitch),
-      camera.position.z + forwardZ * Math.cos(state.cameraPitch),
-    );
+    // Explicit yaw keeps the view stable even when looking exactly straight up.
+    camera.rotation.set(state.cameraPitch, viewYaw + Math.PI, 0, 'YXZ');
     return;
   }
   const isStandingStill = isPlayerStandingStill();
@@ -3334,17 +3554,18 @@ function setDefaultCameraPerspective() {
   const height = (innerWidth < 720 ? 4.5 : 3.9) + state.flightHeight * 0.45;
   const forwardX = Math.sin(cameraYaw);
   const forwardZ = Math.cos(cameraYaw);
-  const horizontalLookAhead = lookAhead * Math.cos(state.cameraPitch * 0.65);
-  const verticalLook = Math.sin(state.cameraPitch) * 22;
+  const indoors = isInsideBaseBuilding();
+  const restingPitch = indoors ? -0.32 : -Math.atan2(innerWidth < 720 ? 4.1 : 3.6, followDistance + lookAhead);
+  // Preserve the normal follow view and reach exactly vertical in both directions.
+  const viewPitch = state.cameraPitch >= 0
+    ? THREE.MathUtils.lerp(restingPitch, Math.PI / 2, state.cameraPitch / (Math.PI / 2))
+    : THREE.MathUtils.lerp(restingPitch, -Math.PI / 2, -state.cameraPitch / (Math.PI / 2));
 
   camera.position.x = ship.position.x - forwardX * followDistance;
   camera.position.z = ship.position.z - forwardZ * followDistance;
   camera.position.y = height;
-  camera.lookAt(
-    ship.position.x + forwardX * horizontalLookAhead,
-    camera.position.y - (innerWidth < 720 ? 4.1 : 3.6) + verticalLook,
-    ship.position.z + forwardZ * horizontalLookAhead,
-  );
+  if (indoors) positionBaseCamera(ship.position, cameraYaw, camera.position);
+  camera.rotation.set(viewPitch, cameraYaw + Math.PI, 0, 'YXZ');
 }
 
 function isPlayerStandingStill() {
@@ -3353,6 +3574,11 @@ function isPlayerStandingStill() {
 
 function updateMovementInputs() {
   if (!state.running) return;
+  if (seatedBench) {
+    state.depthInput = state.steer = 0;
+    state.sprinting = state.jetpackActive = false;
+    return;
+  }
   const forward = activeKeys.has('w') || activeKeys.has('arrowup');
   const backward = activeKeys.has('s') || activeKeys.has('arrowdown');
   const left = activeKeys.has('a') || activeKeys.has('arrowleft');
@@ -3360,6 +3586,12 @@ function updateMovementInputs() {
   const sprint = activeKeys.has('shift');
   const jetpack = activeKeys.has('space');
 
+  const startingToMove = state.depthInput === 0 && state.steer === 0
+    && (forward || backward || left || right);
+  if (startingToMove && !state.firstPerson) {
+    state.faceYaw = state.cameraOrbitYaw;
+    ship.rotation.y = state.faceYaw;
+  }
   state.depthInput = THREE.MathUtils.clamp((forward ? 1 : 0) + (backward ? -1 : 0), -1, 1);
   state.steer = THREE.MathUtils.clamp((right ? 1 : 0) + (left ? -1 : 0), -1, 1);
   state.sprinting = forward && !backward && sprint;
@@ -3367,7 +3599,8 @@ function updateMovementInputs() {
 }
 
 function moveWithMouse(event) {
-  if (inventory.open || pauseMenu.open) return;
+  if (isSleeping) return;
+  if (inventory.open || pauseMenu.open || tradeMenu.open) return;
   updateAimFromPointer(event);
   if (!state.running || event.pointerType === 'touch') return;
   const movementX = event.movementX || 0;
@@ -3375,13 +3608,15 @@ function moveWithMouse(event) {
   if (Math.abs(movementX) + Math.abs(movementY) < 0.5) return;
 
   const isStandingStill = isPlayerStandingStill();
-  if (isStandingStill && !state.firstPerson && !state.laserActive) {
-    state.cameraOrbitYaw -= movementX * 0.006;
+  if (seatedBench || (isStandingStill && !state.firstPerson && !state.laserActive)) {
+    state.cameraOrbitYaw -= movementX * 0.003;
   } else {
-    state.faceYaw -= movementX * 0.006;
+    // Rotate the explorer itself without a yaw limit; the follow camera stays behind.
+    state.faceYaw -= movementX * 0.003;
+    ship.rotation.y = state.faceYaw;
     state.cameraOrbitYaw = state.faceYaw;
   }
-  state.cameraPitch = THREE.MathUtils.clamp(state.cameraPitch - movementY * 0.0045, -0.55, 1.05);
+  state.cameraPitch = THREE.MathUtils.clamp(state.cameraPitch - movementY * 0.0025, minimumCameraPitch(), Math.PI / 2);
   state.mouseSteer = 0;
   state.mouseDepth = 0;
   state.mouseMoveUntil = performance.now() + 140;
@@ -3399,20 +3634,21 @@ function updateAimFromPointer() {
 }
 
 function setLaserActive(event, active) {
-  if (inventory.open || pauseMenu.open) return;
+  if (isSleeping) return;
+  if (inventory.open || pauseMenu.open || tradeMenu.open) return;
   if (event.button !== 0 || event.pointerType === 'touch') return;
-  if (active && state.running && !state.firstPerson && isPlayerStandingStill()) {
+  if (active && state.running && !seatedBench && !state.firstPerson && isPlayerStandingStill()) {
     state.faceYaw = state.cameraOrbitYaw;
     ship.rotation.y = state.faceYaw;
   }
-  if (active && state.running && state.firstPerson && event.target === canvas) {
-    captureFirstPersonMouse();
+  if (active && state.running && event.target === canvas) {
+    captureGameMouse();
   }
   updateAimFromPointer(event);
   if (!active && state.laserActive && state.firstPerson && handLaser) {
     handLaser.visibleUntil = performance.now() + 5000;
   }
-  state.laserActive = active && state.running;
+  state.laserActive = active && state.running && !isInsideBaseBuilding();
 
 }
 
@@ -3546,7 +3782,7 @@ function updateDust(delta) {
 
 function resetSceneryAroundPlayer() {
   resetDustAroundPlayer();
-  sandworm.reset(ship.position, state.faceYaw);
+  sandworm.reset(ship.position, state.faceYaw, state.crystals >= 5);
 
   for (const tuft of grassTufts) {
     placeGroundObjectAroundPlayer(tuft, 0.015, 100, 3);
@@ -3852,8 +4088,10 @@ function updateGame(delta) {
   if (isMoving) {
     state.cameraOrbitYaw = state.faceYaw;
   }
+  const previousFlightHeight = state.flightHeight;
   updateJetpack(delta);
   updateRunAnimation(delta, movementAmount, movementDirection, sprintAmount);
+  if (seatedBench) applySeatedPose();
 
   state.elapsed += isMoving ? delta : 0;
   state.speed = Math.min(25.5, 13.5 + state.elapsed * 0.26 + sprintAmount * 4.8);
@@ -3871,9 +4109,35 @@ function updateGame(delta) {
 
   ship.position.x += moveX * movementScale * delta;
   ship.position.z += moveZ * movementScale * delta;
-  sandworm.update(delta, ship.position, state.faceYaw);
+  // Resolve contact after flight movement, using the explorer's current height.
+  ship.position.y = terrainHeight(ship.position.x, ship.position.z) + playerGroundOffset + state.flightHeight;
+  state.hurtCooldown = Math.max(0, state.hurtCooldown - delta);
+  state.hurtFlash = Math.max(0, state.hurtFlash - delta * 2.5);
+  const dayElapsed = ((pausedAt ?? performance.now()) - dayStartedAt) / 1000;
+  sandworm.updateDawn(dayElapsed, dayDuration, ship.position, state.faceYaw);
+  const wormContact = sandworm.update(delta, ship.position, state.faceYaw);
+  if (wormContact === 'mouth') {
+    state.health = 0;
+    gameOver('Der Sandwurm hat dich mit seinem Maul erwischt.');
+    return;
+  }
+  if (wormContact === 'body' && state.hurtCooldown === 0) {
+    state.health = Math.max(0, state.health - 50);
+    state.hurtCooldown = 1.2;
+    state.hurtFlash = 0.65;
+    if (state.health === 0) {
+      gameOver('Du wurdest vom Sandwurm tödlich verletzt.');
+      return;
+    }
+  }
+  document.querySelector('#app').style.setProperty('--hurt-opacity', state.hurtFlash);
+  clearBaseApproach();
   resolveMountainCollisions();
   resolveRockCollisions();
+  const limitedFlight = seatedBench ? 0 : planetaryBase.resolve(ship.position, state.flightHeight, previousFlightHeight);
+  if (limitedFlight < state.flightHeight) state.flightVelocity = Math.min(0, state.flightVelocity);
+  else if (limitedFlight > state.flightHeight) state.flightVelocity = Math.max(0, state.flightVelocity);
+  state.flightHeight = limitedFlight;
   const groundedMovement = state.flightHeight <= 0.02 ? movementAmount : 0;
   const stepBob = Math.max(0, Math.sin(state.runCycle * 2 + 0.35)) * groundedMovement * 0.055;
   const weightSettle = Math.max(0, -Math.cos(state.runCycle * 2)) * groundedMovement * 0.026;
@@ -3882,7 +4146,11 @@ function updateGame(delta) {
   ship.rotation.y = state.faceYaw;
   ship.rotation.z = THREE.MathUtils.clamp(state.steerVelocity * -0.09 - gaitSway * 0.4, -0.16, 0.16);
   ship.rotation.x = Math.sin(state.elapsed * 3.2) * 0.018 + THREE.MathUtils.clamp(state.depthVelocity * (0.075 + sprintAmount * 0.055), -0.09, 0.16) - weightSettle * 0.8 - state.jetpackBurn * 0.24;
-  if (state.flightHeight <= 0.08 && state.flightVelocity <= 0.4) {
+  if (seatedBench) {
+    ship.position.copy(seatedBench.seat);
+    ship.rotation.set(0, seatedBench.yaw, 0);
+  }
+  if (state.flightHeight <= 0.08 && state.flightVelocity <= 0.4 && !seatedBench) {
     emitStepEffects(movementAmount);
   }
 
@@ -3929,26 +4197,88 @@ function resize() {
 }
 
 function updateFirstPersonCrosshair() {
-  firstPersonCrosshair.hidden = !state.running || inventory.open || pauseMenu.open;
+  firstPersonCrosshair.hidden = !state.running || inventory.open || pauseMenu.open || tradeMenu.open;
   firstPersonCrosshair.style.left = '50%';
   firstPersonCrosshair.style.top = '50%';
 }
 
+const compass = document.querySelector('#compass');
+const compassHeading = document.querySelector('#compass-heading');
+const compassTicks = Array.from({ length: 13 }, () => {
+  const tick = document.createElement('span');
+  document.querySelector('#compass-tape').append(tick);
+  return tick;
+});
+
+function updateCompass() {
+  compass.hidden = !state.running;
+  if (!state.running) return;
+  const yaw = !seatedBench && (state.firstPerson || !isPlayerStandingStill()) ? state.faceYaw : state.cameraOrbitYaw;
+  const heading = ((180 - THREE.MathUtils.radToDeg(yaw)) % 360 + 360) % 360;
+  const directions = document.documentElement.lang === 'en'
+    ? ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
+    : ['N', 'NO', 'O', 'SO', 'S', 'SW', 'W', 'NW'];
+  const label = `${directions[Math.round(heading / 45) % 8]} · ${Math.round(heading) % 360}°`;
+  if (compassHeading.textContent !== label) compassHeading.textContent = label;
+  const dx = baseLocation.x - ship.position.x;
+  const dz = baseLocation.z - ship.position.z;
+  const bearing = (THREE.MathUtils.radToDeg(Math.atan2(dx, -dz)) + 360) % 360;
+  const offset = ((bearing - heading + 540) % 360) - 180;
+  const marker = document.querySelector('#base-compass-marker');
+  marker.style.left = `${50 + THREE.MathUtils.clamp(offset * 0.65, -34, 34)}%`;
+  const markerText = `${offset < -53 ? '‹ ' : ''}⌂ ${Math.round(Math.hypot(dx, dz))} m${offset > 53 ? ' ›' : ''}`;
+  if (marker.textContent !== markerText) marker.textContent = markerText;
+  const base = Math.floor(heading / 15) * 15;
+  compassTicks.forEach((tick, index) => {
+    const angle = base + (index - 6) * 15;
+    const normalized = (angle % 360 + 360) % 360;
+    const text = normalized % 45 === 0 ? directions[normalized / 45] : '│';
+    if (tick.textContent !== text) tick.textContent = text;
+    tick.style.transform = `translateX(${(angle - heading) * 2.4}px) translateX(-50%)`;
+    tick.classList.toggle('cardinal', normalized % 90 === 0);
+  });
+}
+
+const benchMarkers = planetaryBase.benches.map(() => {
+  const marker = document.createElement('div');
+  marker.className = 'bench-interaction'; marker.textContent = 'F'; marker.hidden = true;
+  marker.setAttribute('aria-hidden', 'true'); document.querySelector('#app').append(marker);
+  return marker;
+});
+const benchProjection = new THREE.Vector3();
+
 function animate() {
   const delta = Math.min(clock.getDelta(), 0.04);
+  if (isSleeping) { requestAnimationFrame(animate); return; }
   grassWindTime.value = clock.elapsedTime;
-  if (!inventory.open && !pauseMenu.open) updateGame(delta);
+  if (!inventory.open && !pauseMenu.open && !tradeMenu.open) updateGame(delta);
   setDefaultCameraPerspective();
+  if (state.running && !inventory.open && !pauseMenu.open && !tradeMenu.open) {
+    const grounded = 1 - THREE.MathUtils.smoothstep(state.flightHeight, 0.3, 5);
+    const shake = sandworm.getGroundShake(ship.position) * grounded;
+    const quakeTime = clock.elapsedTime;
+    camera.position.x += (Math.sin(quakeTime * 43) + Math.sin(quakeTime * 71) * 0.4) * shake * 0.16;
+    camera.position.y += Math.sin(quakeTime * 57) * shake * 0.24;
+    camera.position.z += Math.cos(quakeTime * 47) * shake * 0.12;
+    camera.rotateZ(Math.sin(quakeTime * 39) * shake * 0.008);
+  }
   updateFirstPersonCrosshair();
+  updateCompass();
+  updateBenchMarkers();
+  terminalHint.hidden = !state.running || inventory.open || pauseMenu.open || tradeMenu.open || !planetaryBase.canTrade(ship.position);
   updateRockProgress();
   skyDome.position.copy(camera.position);
   updateSunAndKeyLight();
+  updateChestFlashlight();
+  sandworm.setDustLighting(hemi, keyLight);
   renderer.render(scene, camera);
   requestAnimationFrame(animate);
 }
 
 window.addEventListener('resize', resize);
-function captureFirstPersonMouse() {
+function captureGameMouse() {
+  if (isSleeping) return;
+  if (inventory.open || pauseMenu.open || tradeMenu.open || deleteDialog.open) return;
   if (document.pointerLockElement === canvas || !canvas.requestPointerLock) return;
   const request = canvas.requestPointerLock();
   request?.catch(() => {});
@@ -3963,7 +4293,7 @@ window.addEventListener('mousemove', (event) => {
 document.addEventListener('pointerlockchange', () => {
   if (document.pointerLockElement !== canvas) {
     state.laserActive = false;
-    if (state.running && state.firstPerson && !inventory.open && !pauseMenu.open) openPauseMenu();
+    if (state.running && !inventory.open && !pauseMenu.open && !tradeMenu.open) openPauseMenu();
   }
 });
 window.addEventListener('pointerdown', (event) => setLaserActive(event, true));
@@ -3975,14 +4305,27 @@ window.addEventListener('blur', () => {
   activeKeys.clear();
 });
 window.addEventListener('keydown', (event) => {
+  if (isSleeping) { event.preventDefault(); return; }
+  if (deleteDialog.open || tradeMenu.open) return;
   const key = event.code === 'Space' ? 'space' : event.key.toLowerCase();
   if (event.key === 'Escape') {
-    if (inventory.open || pauseMenu.open) return;
+    if (inventory.open || pauseMenu.open || tradeMenu.open) return;
     event.preventDefault();
     if (!event.repeat) openPauseMenu();
     return;
   }
   if (pauseMenu.open) return;
+  if (event.code === 'KeyF' && !event.repeat && state.running) {
+    event.preventDefault();
+    if (inventory.open) {
+      const bag = document.querySelector('#sleeping-bag');
+      if (bag.matches(':hover') || bag === document.activeElement) sleepUntilMorning();
+      return;
+    }
+    if (seatedBench || planetaryBase.nearestBench(ship.position)) toggleBenchSeat();
+    else openTradingTerminal();
+    return;
+  }
   if (event.code === 'KeyE') {
     event.preventDefault();
     if (!event.repeat) {
@@ -3995,21 +4338,21 @@ window.addEventListener('keydown', (event) => {
         updateMovementInputs();
         if (document.pointerLockElement === canvas) document.exitPointerLock();
         updateInventoryResources();
+        document.querySelector('#sleep-status').textContent = '';
         inventory.showModal();
       }
     }
     return;
   }
-  if (inventory.open || pauseMenu.open) return;
+  if (inventory.open || pauseMenu.open || tradeMenu.open) return;
   if (key === 'p' && !event.repeat) {
-    if (!state.firstPerson && isPlayerStandingStill()) {
+    if (!seatedBench && !state.firstPerson && isPlayerStandingStill()) {
       state.faceYaw = state.cameraOrbitYaw;
     }
     state.firstPerson = !state.firstPerson;
-    if (state.firstPerson && state.running) captureFirstPersonMouse();
-    else if (document.pointerLockElement === canvas) document.exitPointerLock();
+    if (state.running) captureGameMouse();
     document.querySelector('#app').classList.toggle('is-first-person', state.firstPerson);
-    state.cameraOrbitYaw = state.faceYaw;
+    state.cameraOrbitYaw = state.faceYaw + (seatedBench && !state.firstPerson ? Math.PI / 3 : 0);
     setDefaultCameraPerspective();
   }
   if (key === 'space') {
@@ -4046,15 +4389,14 @@ for (const control of [leftControl, rightControl]) {
 }
 document.querySelector('#inventory-close').addEventListener('click', () => inventory.close());
 inventory.addEventListener('close', () => {
-  if (state.firstPerson && state.running) captureFirstPersonMouse();
+  if (state.running) captureGameMouse();
 });
 pauseMenu.addEventListener('close', () => {
   if (pausedAt !== null) dayStartedAt += performance.now() - pausedAt;
   pausedAt = null;
-  if (state.running && state.firstPerson) captureFirstPersonMouse();
+  if (state.running) captureGameMouse();
 });
 document.querySelector('#resume-button').addEventListener('click', () => pauseMenu.close());
-document.querySelector('#save-button').addEventListener('click', saveGame);
 document.querySelector('#quit-button').addEventListener('click', () => {
   if (!saveGame()) return;
   state.running = false;
@@ -4068,11 +4410,218 @@ document.querySelector('#quit-button').addEventListener('click', () => {
   overlay.classList.add('visible');
   updateHud();
 });
-loadButton.addEventListener('click', loadGame);
+loadSlot.addEventListener('change', () => {
+  if (state.running) return;
+  updateLoadButton();
+});
+saveSlot.addEventListener('change', () => {
+  saveSlot.value = String(activeSaveSlot);
+});
+loadButton.addEventListener('click', () => {
+  if (state.running || !overlay.classList.contains('visible')) return;
+  captureGameMouse();
+  loadGame();
+});
 refreshLoadButton();
-startButton.addEventListener('click', resetGame);
+startButton.addEventListener('click', () => {
+  captureGameMouse();
+  resetGame();
+});
 
 resize();
-sandworm.reset(ship.position, state.faceYaw);
+sandworm.reset(ship.position, state.faceYaw, state.crystals >= 5);
 overlay.classList.add('visible');
 animate();
+
+// Capture C before gameplay shortcuts, while leaving save-name typing untouched.
+window.addEventListener('keydown', (event) => {
+  if (deleteDialog.open) {
+    event.stopImmediatePropagation();
+    return;
+  }
+  if (event.key.toLowerCase() !== 'c' || event.repeat || event.ctrlKey || event.metaKey || event.altKey) return;
+  if (event.target.closest?.('input, textarea, [contenteditable="true"]')) return;
+  const inMainMenu = !state.running && overlay.classList.contains('visible')
+    && !pauseMenu.open && !inventory.open;
+  const selector = inMainMenu && !loadSlot.hidden ? loadSlot : null;
+  if (!selector) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  try {
+    const slot = Number(selector.value);
+    const saved = readSaves(localStorage)[slot];
+    if (!saved) return;
+    pendingDeleteSlot = slot;
+    document.querySelector('#delete-save-name').textContent = `${slot + 1} · ${saved.name}`;
+    document.querySelector('#delete-save-error').hidden = true;
+    deleteDialog.showModal();
+  } catch { /* No deletion is possible when storage cannot be read. */ }
+}, true);
+document.querySelector('#delete-save-cancel').addEventListener('click', () => deleteDialog.close());
+deleteDialog.addEventListener('close', () => { pendingDeleteSlot = null; });
+document.querySelector('#delete-save-confirm').addEventListener('click', () => {
+  if (pendingDeleteSlot === null || state.running || !overlay.classList.contains('visible')) return;
+  try {
+    deleteSave(localStorage, pendingDeleteSlot);
+    refreshLoadButton();
+    deleteDialog.close();
+  } catch {
+    document.querySelector('#delete-save-error').hidden = false;
+  }
+});
+
+function clearBaseApproach() {
+  for (const object of [...rocks, ...grassTufts, ...hills]) {
+    const clearance = hills.includes(object) ? 60 : 12 * baseLayout.scale;
+    if (Math.abs(object.position.x) < clearance && Math.abs(object.position.z - baseLocation.z) < clearance) {
+      object.position.x += object.position.x < 0 ? -clearance - 4 : clearance + 4;
+      object.position.y = terrainHeight(object.position.x, object.position.z) + (rocks.includes(object) ? 0.18 : 0.02);
+    }
+  }
+}
+
+function refreshTradingTerminal() {
+  const english = document.documentElement.lang === 'en';
+  document.querySelector('#trade-balance').textContent = english
+    ? `${state.stones} rocks · ${state.crystals} crystals`
+    : `${state.stones} Steine · ${state.crystals} Kristalle`;
+  const list = document.querySelector('#trade-products');
+  list.replaceChildren();
+  for (const item of catalog) {
+    const card = document.createElement('article');
+    const title = document.createElement('h3');
+    title.textContent = (english ? item.english : item.name) + (item.id === 'laser' ? ` (${state.laserLevel}/3)` : item.id === 'jetpack' ? ` (${state.jetpackLevel}/2)` : '');
+    const price = document.createElement('p'); price.textContent = english
+      ? `${item.stones} rocks · ${item.crystals} crystals` : `${item.stones} Steine · ${item.crystals} Kristalle`;
+    const button = document.createElement('button'); button.type = 'button'; button.dataset.product = item.id;
+    const maximum = item.id === 'medical' ? state.health >= 100 : item.id === 'laser' ? state.laserLevel >= 3 : state.jetpackLevel >= 2;
+    button.textContent = maximum ? (english ? 'Maximum reached' : 'Maximum erreicht') : (english ? 'Buy' : 'Kaufen');
+    button.disabled = maximum || state.stones < item.stones || state.crystals < item.crystals;
+    button.addEventListener('click', () => {
+      const result = purchase(state, item.id);
+      document.querySelector('#trade-status').textContent = result === 'success' ? 'Kauf erfolgreich.' : 'Kauf nicht möglich.';
+      updateHud(); updateInventoryResources(); refreshTradingTerminal();
+    });
+    card.append(title, price, button); list.append(card);
+  }
+}
+function openTradingTerminal() {
+  if (!state.running || pauseMenu.open || inventory.open || tradeMenu.open || !planetaryBase.canTrade(ship.position)) return;
+  pausedAt = performance.now();
+  state.laserActive = state.jetpackActive = false;
+  activeKeys.clear(); updateMovementInputs();
+  state.depthVelocity = state.steerVelocity = 0;
+  document.querySelector('#trade-status').textContent = '';
+  refreshTradingTerminal(); tradeMenu.showModal();
+  if (document.pointerLockElement === canvas) document.exitPointerLock();
+}
+terminalHint.addEventListener('click', openTradingTerminal);
+document.querySelector('#trade-close').addEventListener('click', () => tradeMenu.close());
+tradeMenu.addEventListener('close', () => {
+  if (pausedAt !== null) dayStartedAt += performance.now() - pausedAt;
+  pausedAt = null;
+  if (state.running) captureGameMouse();
+});
+
+
+function updateBenchMarkers() {
+  const available = state.running && !inventory.open && !pauseMenu.open && !tradeMenu.open;
+  const nearest = available && !seatedBench ? planetaryBase.nearestBench(ship.position) : null;
+  planetaryBase.benches.forEach((bench, index) => {
+    const marker = benchMarkers[index];
+    marker.hidden = bench !== nearest;
+    if (marker.hidden) return;
+    benchProjection.copy(bench.marker).project(camera);
+    marker.hidden = benchProjection.z < -1 || benchProjection.z > 1 || Math.abs(benchProjection.x) > 1 || Math.abs(benchProjection.y) > 1;
+    marker.style.left = `${(benchProjection.x + 1) * innerWidth / 2}px`;
+    marker.style.top = `${(1 - benchProjection.y) * innerHeight / 2}px`;
+  });
+  document.querySelector('#stand-hint').hidden = !available || !seatedBench;
+}
+function toggleBenchSeat() {
+  if (!state.running || inventory.open || pauseMenu.open || tradeMenu.open) return;
+  if (seatedBench) {
+    ship.position.copy(seatedBench.stand);
+    seatedBench = null;
+    updateRunAnimation(0, 0, 1, 0);
+  } else {
+    const bench = planetaryBase.nearestBench(ship.position);
+    if (!bench || state.flightHeight > 0.2) return;
+    seatedBench = bench;
+    ship.position.copy(bench.seat);
+    state.faceYaw = bench.yaw;
+    state.cameraOrbitYaw = bench.yaw + (state.firstPerson ? 0 : Math.PI / 3);
+  }
+  activeKeys.clear();
+  state.depthInput = state.steer = state.depthVelocity = state.steerVelocity = 0;
+  state.flightHeight = state.flightVelocity = state.jetpackBurn = 0;
+  state.jetpackActive = state.laserActive = state.sprinting = false;
+  ship.rotation.set(0, state.faceYaw, 0);
+  updateMovementInputs();
+}
+function applySeatedPose() {
+  for (const rig of limbRig) {
+    const x = rig.side * 0.24;
+    rig.hip.position.set(x, -0.29, 0.02);
+    rig.thighRing.position.set(x, -0.29, 0.16);
+    rig.thighRing.rotation.set(Math.PI / 2, 0, 0);
+    rig.upperLeg.position.set(x, -0.3, 0.27);
+    rig.upperLeg.rotation.set(Math.PI / 2, 0, 0);
+    rig.leg.position.set(x, -0.64, 0.52);
+    rig.leg.rotation.set(0, 0, 0);
+    rig.kneePad.position.set(x, -0.35, 0.61);
+    rig.ankleRing.position.set(x, -0.96, 0.52);
+    rig.boot.position.set(x, -1.06, 0.65);
+    rig.boot.rotation.set(0, 0, 0);
+    rig.bootSole.position.set(x, -1.15, 0.67);
+    rig.bootSole.rotation.set(0, 0, 0);
+    rig.isFootPlanted = false;
+  }
+}
+
+function sleepUntilMorning() {
+  if (!state.running || !inventory.open || isSleeping) return;
+  const status = document.querySelector('#sleep-status');
+  if (state.flightHeight > 0.2) {
+    status.textContent = 'Lande zuerst, um den Schlafsack zu benutzen.';
+    return;
+  }
+  const elapsed = ((pausedAt ?? performance.now()) - dayStartedAt) / 1000;
+  const cycle = (initialSunAngle / Math.PI * daylightDuration + elapsed) % dayDuration;
+  if (cycle < daylightDuration) {
+    status.textContent = 'Du kannst den Schlafsack nur nachts benutzen.';
+    return;
+  }
+  const morningElapsed = elapsed + dayDuration - cycle;
+  sandworm.updateDawn(elapsed, dayDuration, ship.position, state.faceYaw);
+  state.laserActive = state.jetpackActive = false;
+  state.depthVelocity = state.steerVelocity = 0;
+  activeKeys.clear(); updateMovementInputs();
+  curseMessage.hide();
+  isSleeping = true;
+  sleepOverlay.hidden = false;
+  sleepFade = sleepOverlay.animate([
+    { opacity: 0, offset: 0 },
+    { opacity: 1, offset: 1 / 7 },
+    { opacity: 1, offset: 6 / 7 },
+    { opacity: 0, offset: 1 },
+  ], { duration: 7000, fill: 'forwards', easing: 'linear' });
+  inventory.close();
+  sleepTimer = setTimeout(() => {
+    sleepTimer = null;
+    // Prepare dawn while still black, before gently revealing the morning.
+    dayStartedAt = performance.now() - morningElapsed * 1000;
+    sandworm.updateDawn(morningElapsed, dayDuration, ship.position, state.faceYaw);
+    updateSunAndKeyLight();
+    updateChestFlashlight();
+    renderer.render(scene, camera);
+    sleepTimer = setTimeout(() => {
+      sleepTimer = null;
+      isSleeping = false;
+      sleepOverlay.hidden = true;
+      sleepFade?.cancel();
+      sleepFade = null;
+      captureGameMouse();
+    }, 1000);
+  }, 6000);
+}
