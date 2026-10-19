@@ -1,4 +1,11 @@
 const translations = [
+  ['DER SANDSTURM HAT SICH VERZOGEN', 'THE SANDSTORM HAS PASSED'],
+  ['HEFTIGER SANDSTURM NÄHERT SICH, BITTE SOFORT SCHUTZ FINDEN!!!', 'SEVERE SANDSTORM APPROACHING, FIND SHELTER IMMEDIATELY!!!'],
+  ['Spielsounds', 'Game sounds'],
+  ['Das Wurmhorn funktioniert nur, wenn der Sandwurm da ist.', 'The worm horn only works while the sandworm is present.'],
+  ['Auswählen und F drücken · Verjagt den Sandwurm', 'Select and press F · Banishes the sandworm'],
+  ['DU HAST DEN FLUCH ÜDERWUNDEN UND HAST DEN SANDWURM VERJAGT, DU BIST FREI', 'YOU HAVE OVERCOME THE CURSE AND BANISHED THE SANDWORM, YOU ARE FREE'],
+  ['4 Gegenstände', '4 items'], ['Wurmhorn', 'Worm horn'], ['Am Handelsterminal gekauft.', 'Purchased at the trading terminal.'],
   ['Du schläfst.', 'You are sleeping.'],
   ['3 Gegenstände', '3 items'], ['Dabei', 'Carried'], ['Schlafsack', 'Sleeping bag'],
   ['Schlafe durch die Nacht bis zum nächsten Morgen.', 'Sleep through the night until the next morning.'],

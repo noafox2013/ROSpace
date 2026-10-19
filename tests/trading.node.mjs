@@ -55,3 +55,17 @@ test('third-person camera stays inside the base at doors, corners and all headin
     }
   }
 });
+
+test('worm horns cost 30 crystals each and cannot be bought without funds', () => {
+  const state = { ...fresh(), stones: 0, crystals: 60, wormHorns: 0 };
+  assert.equal(purchase(state, 'wormhorn'), 'success');
+  assert.equal(state.crystals, 30);
+  assert.equal(state.wormHorns, 1);
+  assert.equal(state.jetpackLevel, 0);
+  assert.equal(purchase(state, 'wormhorn'), 'success');
+  assert.equal(state.crystals, 0);
+  assert.equal(state.wormHorns, 2);
+  assert.equal(purchase(state, 'wormhorn'), 'funds');
+  assert.equal(state.wormHorns, 2);
+  assert.equal(state.stones, 0);
+});

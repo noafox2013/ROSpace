@@ -15,6 +15,7 @@ export function positionBaseCamera(player, yaw, target) {
 }
 
 export const catalog = [
+  { id: 'wormhorn', name: 'Wurmhorn', english: 'Worm horn', stones: 0, crystals: 30 },
   { id: 'medical', name: 'Medizinpaket · +50 Leben', english: 'Medical kit · +50 health', stones: 5, crystals: 0 },
   { id: 'laser', name: 'Laser-Upgrade · +35 % Schaden', english: 'Laser upgrade · +35% damage', stones: 10, crystals: 3 },
   { id: 'jetpack', name: 'Jetpack-Upgrade · +3 m Flughöhe', english: 'Jetpack upgrade · +3 m flight height', stones: 15, crystals: 4 },
@@ -29,6 +30,7 @@ export function purchase(state, id) {
   state.crystals -= item.crystals;
   if (id === 'medical') state.health = Math.min(100, state.health + 50);
   else if (id === 'laser') state.laserLevel = (state.laserLevel || 0) + 1;
+  else if (id === 'wormhorn') state.wormHorns = (state.wormHorns || 0) + 1;
   else state.jetpackLevel = (state.jetpackLevel || 0) + 1;
   return 'success';
 }

@@ -25,7 +25,7 @@ test('third-person running supports full mouse turns and releases the cursor on 
   })));
   await page.keyboard.down('w');
   await page.evaluate(() => window.dispatchEvent(new MouseEvent('mousemove', {
-    movementX: 2400, movementY: -2000, bubbles: true,
+    movementX: 3600, movementY: -2000, bubbles: true,
   })));
   await page.keyboard.up('w');
   await page.keyboard.press('Escape');

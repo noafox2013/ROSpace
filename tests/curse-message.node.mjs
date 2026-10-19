@@ -56,3 +56,40 @@ test('legacy flags that could be set without displaying the message do not suppr
   assert(nextGame.showOnce());
   nextGame.hide();
 });
+
+test('message history keeps the curse and freedom messages after hiding and loading', () => {
+  const element = { hidden: true, textContent: 'Curse' };
+  const message = createCurseMessage(element);
+  message.showOnce();
+  message.show('Freedom');
+  message.hide();
+  assert.deepEqual(message.getHistory(), ['Curse', 'Freedom']);
+  const restored = createCurseMessage({ hidden: true, textContent: 'Freedom' });
+  restored.restoreHistory(message.getHistory());
+  restored.remember();
+  assert.deepEqual(restored.getHistory(), ['Curse', 'Freedom']);
+  restored.reset();
+  assert.deepEqual(restored.getHistory(), []);
+});
+
+test('weather alerts keep their history without suppressing the curse', () => {
+  const element = { hidden: true, textContent: 'Curse' };
+  const message = createCurseMessage(element);
+  message.show('Storm warning');
+  assert.equal(message.isShown(), false);
+  assert.equal(message.showOnce('Curse'), true);
+  assert.equal(element.textContent, 'Curse');
+  assert.deepEqual(message.getHistory(), ['Storm warning', 'Curse']);
+  message.hide();
+});
+
+test('temporary warnings appear without entering message history', () => {
+  const element = { hidden: true, textContent: 'Curse' };
+  const message = createCurseMessage(element);
+  message.showOnce();
+  message.show('Storm warning', { keepHistory: false });
+  assert.equal(element.hidden, false);
+  assert.equal(element.textContent, 'Storm warning');
+  assert.deepEqual(message.getHistory(), ['Curse']);
+  message.hide();
+});

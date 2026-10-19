@@ -1,4 +1,16 @@
 import './styles.css';
+import { createSandstorm } from './sandstorm.js';
+import { createGameAudio } from './audio.js';
+const audio = createGameAudio();
+for (const event of ['pointerdown', 'keydown']) document.addEventListener(event, () => audio.unlock(), { capture: true });
+document.addEventListener('click', event => { if (event.target.closest('button')) audio.play('ui'); });
+const soundToggle = document.querySelector('#sound-toggle');
+soundToggle.checked = localStorage.getItem('rust-mesa-muted') !== 'true';
+audio.setMuted(!soundToggle.checked);
+soundToggle.addEventListener('change', () => {
+  audio.setMuted(!soundToggle.checked);
+  localStorage.setItem('rust-mesa-muted', String(!soundToggle.checked));
+});
 import { baseLocation, baseLayout, createPlanetaryBase, catalog, purchase, positionBaseCamera } from './base.js';
 import { readSaves, writeSave, deleteSave } from './saves.js';
 import { setupLanguage } from './language.js';
@@ -44,12 +56,17 @@ const loadSlot = document.querySelector('#load-slot');
 const deleteDialog = document.querySelector('#delete-save-dialog');
 let pendingDeleteSlot = null;
 let activeSaveSlot = 0;
+let currentRunHasSave = false;
+let restartAfterDeath = false;
 let seatedBench = null;
 let isSleeping = false;
 let sleepTimer = null;
 let sleepFade = null;
 const sleepOverlay = document.querySelector('#sleep-overlay');
 const curseMessage = createCurseMessage(document.querySelector('#curse-message'));
+const curseWarningText = document.querySelector('#curse-message').textContent;
+const stormWarningText = 'HEFTIGER SANDSTURM NÄHERT SICH, BITTE SOFORT SCHUTZ FINDEN!!!';
+const freedomMessageText = 'DU HAST DEN FLUCH ÜDERWUNDEN UND HAST DEN SANDWURM VERJAGT, DU BIST FREI';
 let pausedAt = null;
 
 function openPauseMenu() {
@@ -64,13 +81,15 @@ function openPauseMenu() {
   updateMovementInputs();
   const messageList = document.querySelector('#game-message-list');
   messageList.replaceChildren();
-  const hasMessage = curseMessage.isShown();
+  const messages = curseMessage.getHistory();
+  const hasMessage = messages.length > 0;
   document.querySelector('#game-messages-empty').hidden = hasMessage;
-  if (hasMessage) {
+  for (const message of messages) {
     const entry = document.createElement('li');
-    entry.textContent = document.querySelector('#curse-message').textContent;
+    entry.textContent = message;
     messageList.append(entry);
   }
+  audio.silence(); audio.play('ui');
   pauseMenu.showModal();
   if (document.pointerLockElement === canvas) document.exitPointerLock();
 }
@@ -109,7 +128,7 @@ function saveGame() {
     const name = saveNameInput.value.trim().slice(0, 60) || 'Mein Spielstand';
     saveNameInput.value = name;
     const savedState = {};
-    for (const key of ['health', 'score', 'stones', 'crystals', 'laserLevel', 'jetpackLevel', 'elapsed', 'flightHeight', 'flightVelocity',
+    for (const key of ['health', 'score', 'stones', 'crystals', 'laserLevel', 'jetpackLevel', 'wormHorns', 'elapsed', 'flightHeight', 'flightVelocity',
       'faceYaw', 'cameraOrbitYaw', 'cameraPitch', 'firstPerson', 'weaponMode']) savedState[key] = state[key];
     const selectedSlot = activeSaveSlot;
     writeSave(localStorage, selectedSlot, {
@@ -118,11 +137,16 @@ function saveGame() {
       state: savedState,
       sandwormRepelled: sandworm.isRepelled(),
       curseMessageSeen: curseMessage.isShown(),
+      gameMessages: curseMessage.getHistory(),
+      sandstorm: sandstorm.snapshot(),
+      curseLifted: state.curseLifted,
       sandwormWeakPoint: sandworm.getWeakPointProgress(),
       position: (seatedBench ? seatedBench.stand : ship.position).toArray(),
       dayElapsed: ((pausedAt ?? performance.now()) - dayStartedAt) / 1000,
       rocks: rocks.map((rock) => ({ position: rock.position.toArray(), damage: rock.userData.laserDamage || 0 })),
     });
+    audio.play('buy');
+    currentRunHasSave = true;
     refreshLoadButton();
     saveSlot.value = String(selectedSlot);
     loadSlot.value = String(selectedSlot);
@@ -144,15 +168,17 @@ function loadGame() {
       || !Number.isFinite(saved.dayElapsed)) throw new Error('Invalid save');
     resetGame();
     activeSaveSlot = selectedSlot;
+    currentRunHasSave = true;
     saveSlot.value = String(selectedSlot);
     saveNameInput.value = typeof saved.name === 'string' ? saved.name.slice(0, 60) : 'Mein Spielstand';
-    for (const key of ['health', 'score', 'stones', 'crystals', 'laserLevel', 'jetpackLevel', 'elapsed', 'flightHeight', 'flightVelocity',
+    for (const key of ['health', 'score', 'stones', 'crystals', 'laserLevel', 'jetpackLevel', 'wormHorns', 'elapsed', 'flightHeight', 'flightVelocity',
       'faceYaw', 'cameraOrbitYaw', 'cameraPitch']) {
       if (Number.isFinite(saved.state[key])) state[key] = saved.state[key];
     }
     state.health = THREE.MathUtils.clamp(state.health, 1, 100);
     state.laserLevel = Math.floor(THREE.MathUtils.clamp(state.laserLevel, 0, 3));
     state.jetpackLevel = Math.floor(THREE.MathUtils.clamp(state.jetpackLevel, 0, 2));
+    state.wormHorns = Math.max(0, Math.floor(state.wormHorns));
     state.firstPerson = saved.state.firstPerson === true;
     state.weaponMode = saved.state.weaponMode === 'shots' ? 'shots' : 'beam';
     ship.position.fromArray(saved.position);
@@ -160,11 +186,15 @@ function loadGame() {
     dayStartedAt = performance.now() - saved.dayElapsed * 1000;
     updateTerrainAroundPlayer();
     resetSceneryAroundPlayer();
+    sandstorm.restore(saved.sandstorm);
     sandworm.restoreWeakPointProgress(saved.sandwormWeakPoint);
+    state.curseLifted = saved.curseLifted === true;
+    if (state.curseLifted) document.querySelector('#curse-message').textContent = freedomMessageText;
+    curseMessage.restoreHistory(Array.isArray(saved.gameMessages) ? saved.gameMessages.filter(text => text !== stormWarningText && text !== 'SEVERE SANDSTORM APPROACHING, FIND SHELTER IMMEDIATELY!!!') : []);
     if (saved.curseMessageSeen === true) curseMessage.remember();
     if (saved.sandwormRepelled === true) {
       sandworm.repel(true);
-      curseMessage.showOnce();
+      curseMessage.showOnce(state.curseLifted ? freedomMessageText : curseWarningText);
     }
     saved.rocks?.forEach((entry, index) => {
       if (rocks[index] && Array.isArray(entry.position) && entry.position.every(Number.isFinite)) {
@@ -182,14 +212,14 @@ function loadGame() {
 
 const playerMovement = {
   startZ: 2.15,
-  lateralSpeed: 6.0,
-  depthSpeed: 4.0,
-  sprintMultiplier: 1.5,
+  lateralSpeed: 4.8,
+  depthSpeed: 3.6,
+  sprintMultiplier: 1.4,
   jetpackLift: 9.5,
   jetpackGravity: 9.504,
   jetpackMaxHeight: 9.68,
-  acceleration: 5.5,
-  deceleration: 5.2,
+  acceleration: 3.6,
+  deceleration: 4.8,
 };
 const state = {
   running: false,
@@ -201,6 +231,8 @@ const state = {
   crystals: 0,
   laserLevel: 0,
   jetpackLevel: 0,
+  wormHorns: 0,
+  curseLifted: false,
   best: Number(localStorage.getItem('orbital-drift-best') || 0),
   speed: 13.5,
   elapsed: 0,
@@ -304,6 +336,14 @@ renderer.toneMappingExposure = 0.92;
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xa7bfca);
 scene.fog = new THREE.Fog(0xb7a89f, 300, 1100);
+function showWeatherNotice(text) {
+  curseMessage.show(text, { keepHistory: false });
+  document.querySelector('#curse-message').classList.add('storm-warning');
+  audio.play('message');
+}
+const sandstorm = createSandstorm(scene,
+  () => showWeatherNotice(stormWarningText),
+  () => showWeatherNotice('DER SANDSTURM HAT SICH VERZOGEN'), terrainHeight);
 
 const camera = new THREE.PerspectiveCamera(62, 1, 0.1, 720);
 scene.add(camera);
@@ -373,6 +413,7 @@ const skyDome = new THREE.Mesh(
       starAngle: { value: 0 },
       sunDirection: { value: sunDirection },
       dawnStrength: { value: 0 },
+      stormStrength: { value: 0 },
     },
     vertexShader: `
       varying vec3 vLocalPosition;
@@ -391,8 +432,29 @@ const skyDome = new THREE.Mesh(
       uniform float starAngle;
       uniform vec3 sunDirection;
       uniform float dawnStrength;
+      uniform float stormStrength;
       float starHash(vec2 cell) {
         return fract(sin(dot(cell, vec2(127.1, 311.7))) * 43758.5453);
+      }
+      float stormHash(vec2 p) {
+        vec3 v = fract(vec3(p.xyx) * 0.1031);
+        v += dot(v, v.yzx + 33.33);
+        return fract((v.x + v.y) * v.z);
+      }
+      float stormNoise(vec2 p) {
+        vec2 cell = floor(p), f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(stormHash(cell), stormHash(cell + vec2(1.0, 0.0)), f.x),
+          mix(stormHash(cell + vec2(0.0, 1.0)), stormHash(cell + vec2(1.0)), f.x), f.y);
+      }
+      float stormBillows(vec2 p) {
+        float value = 0.0, amplitude = 0.55;
+        for (int octave = 0; octave < 4; octave++) {
+          value += stormNoise(p) * amplitude;
+          p = mat2(1.6, -1.2, 1.2, 1.6) * p + vec2(13.7, 7.1);
+          amplitude *= 0.48;
+        }
+        return value;
       }
       void main() {
         vec3 direction = normalize(vLocalPosition);
@@ -433,6 +495,26 @@ const skyDome = new THREE.Mesh(
           * smoothstep(0.02, 0.2, h) * nightStrength;
         vec3 starColor = mix(vec3(0.65, 0.8, 1.0), vec3(1.0, 0.9, 0.7), starHash(cell + 91.0));
         sky += starColor * stars * 2.5;
+        if (stormStrength > 0.001) {
+          // Project onto a broad ceiling: no spherical seams or isolated sprite puffs.
+          vec2 ceiling = direction.xz / max(0.16, direction.y + 0.22) * 2.2;
+          vec2 drift = vec2(starTime * 0.027, starTime * 0.011);
+          vec2 warp = vec2(stormNoise(ceiling * 0.7 + drift), stormNoise(ceiling * 0.7 - drift + 34.0));
+          float density = stormBillows(ceiling + warp * 1.5 + drift);
+          float underlayer = stormBillows(ceiling * 2.1 - drift * 1.4 + 71.0);
+          float litDensity = stormBillows(ceiling + warp * 1.5 + drift + sunDirection.xz * 0.35);
+          float daylight = smoothstep(-0.2, 0.3, sunDirection.y);
+          vec3 underside = mix(vec3(0.075, 0.085, 0.11), vec3(0.21, 0.20, 0.185), daylight);
+          vec3 dustLight = mix(vec3(0.16, 0.15, 0.14), vec3(0.48, 0.40, 0.31), daylight);
+          float relief = clamp(0.45 + (litDensity - density) * 3.2 + underlayer * 0.25, 0.05, 0.95);
+          vec3 overcast = mix(underside, dustLight, relief);
+          overcast *= 0.82 + density * 0.28;
+          // At the horizon the cloud ceiling merges into the airborne sand wall.
+          overcast = mix(dustLight * 0.83, overcast, smoothstep(-0.08, 0.25, h));
+          float closing = smoothstep(0.0, 0.85, stormStrength);
+          float rollingEdge = smoothstep(0.14, 0.7, stormStrength + density * 0.42);
+          sky = mix(sky, overcast, mix(rollingEdge, 1.0, closing) * smoothstep(0.0, 0.4, stormStrength));
+        }
         gl_FragColor = vec4(sky, 1.0);
       }
     `,
@@ -528,6 +610,8 @@ function updateSunAndKeyLight() {
   const sky = skyDome.material.uniforms;
   sky.nightStrength.value = 1 - THREE.MathUtils.smoothstep(sunDirection.y, -0.25, 0.02);
   sky.starTime.value = elapsedSeconds;
+  const stormCover = sandstorm.getIntensity();
+  sky.stormStrength.value = stormCover;
   sky.starAngle.value = sunAngle;
   visorMaterial.envMapIntensity = THREE.MathUtils.lerp(0.85, 0.4, sky.nightStrength.value);
   sky.dawnStrength.value = sunset;
@@ -539,6 +623,7 @@ function updateSunAndKeyLight() {
   hemi.intensity = THREE.MathUtils.lerp(1.1, 1.65, daylight);
   hemi.color.copy(colors.nightAmbient).lerp(colors.daySky, daylight);
   for (const material of cloudMaterials) {
+    material.opacity = 0.64 * (1 - stormCover);
     material.color.copy(colors.nightCloud).lerp(colors.dayCloud, daylight)
       .lerp(colors.twilightCloud, sunset * 0.45);
   }
@@ -546,9 +631,10 @@ function updateSunAndKeyLight() {
   for (const material of crystalDebrisMaterials) {
     material.emissiveIntensity = THREE.MathUtils.lerp(1.4, 0.15, daylight);
   }
-  keyLight.intensity = 2.7 * directLight;
+  keyLight.intensity = 2.7 * directLight * (1 - stormCover * 0.88);
+  hemi.intensity *= 1 - stormCover * 0.25;
   keyLight.color.copy(colors.warmSun).lerp(colors.noonSun, THREE.MathUtils.smoothstep(sunDirection.y, 0, 0.8));
-  sun.material.opacity = THREE.MathUtils.smoothstep(sunDirection.y, -0.06, 0.06);
+  sun.material.opacity = THREE.MathUtils.smoothstep(sunDirection.y, -0.06, 0.06) * Math.pow(1 - stormCover, 3);
   sun.visible = sun.material.opacity > 0;
   sun.position.copy(camera.position).addScaledVector(sunDirection, sunDistance);
   // Lift the apparent sun near the horizon so its bright core clears the terrain.
@@ -809,7 +895,7 @@ const materials = {
 const world = new THREE.Group();
 scene.add(world);
 const planetaryBase = createPlanetaryBase(scene);
-const sandworm = createSandworm(terrainHeight, () => curseMessage.showOnce());
+const sandworm = createSandworm(terrainHeight, () => { if (curseMessage.showOnce(curseWarningText)) audio.play('message'); });
 world.add(sandworm.object);
 
 const rustDark = new THREE.Color(0x623727);
@@ -1588,7 +1674,7 @@ function findWeaponSurfaceHit(origin, direction, distance) {
   sandworm.object.updateWorldMatrix(true, true);
   planetaryBase.group.updateWorldMatrix(true, true);
   const wormTargets = sandworm.getLaserTargets();
-  const hit = rockImpactRay.intersectObjects([...rocks, ...terrainTiles, planetaryBase.group, ...wormTargets], true)[0];
+  const hit = rockImpactRay.intersectObjects([...rocks, ...terrainTiles, ...mountains, planetaryBase.group, ...wormTargets], true)[0];
   if (!hit) return null;
   let ancestor = hit.object;
   while (ancestor && ancestor !== sandworm.object) ancestor = ancestor.parent;
@@ -1603,6 +1689,7 @@ function findWeaponSurfaceHit(origin, direction, distance) {
 }
 
 function emitRockImpact(hit) {
+  audio.play(terrainTiles.includes(hit.object) ? 'groundImpact' : 'impact', 1, hit.point);
   for (let i = 0; i < 2; i += 1) {
     const chip = rockFragments[rockFragmentIndex];
     rockFragmentIndex = (rockFragmentIndex + 1) % rockFragments.length;
@@ -1898,6 +1985,7 @@ visorMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.nightStrength = sky.nightStrength;
   shader.uniforms.starTime = sky.starTime;
   shader.uniforms.starAngle = sky.starAngle;
+  shader.uniforms.stormStrength = sky.stormStrength;
   const skySource = skyDome.material.fragmentShader;
   const starField = skySource.slice(skySource.indexOf('// Rotate the celestial sphere'),
     skySource.indexOf('        sky += starColor'))
@@ -1905,6 +1993,7 @@ visorMaterial.onBeforeCompile = (shader) => {
   shader.fragmentShader = shader.fragmentShader.replace('#include <common>', `
     #include <common>
     uniform float nightStrength;
+    uniform float stormStrength;
     uniform float starTime;
     uniform float starAngle;
     float starHash(vec2 cell) {
@@ -1916,7 +2005,7 @@ visorMaterial.onBeforeCompile = (shader) => {
       vec3 direction = inverseTransformDirection(reflect(-normalize(vViewPosition), normal), viewMatrix);
       float h = direction.y;
       ${starField}
-      totalEmissiveRadiance += starColor * stars * 3.5;
+      totalEmissiveRadiance += starColor * stars * 3.5 * (1.0 - stormStrength);
     }
   `);
 };
@@ -2872,6 +2961,9 @@ function resetFootEffects() {
 }
 
 function updateInventoryResources() {
+  document.querySelector('#worm-horn').hidden = state.wormHorns === 0;
+  document.querySelector('#worm-horn-count').textContent = `${state.wormHorns} Stück`;
+  document.querySelector('#equipment-title span').textContent = state.wormHorns > 0 ? '4 Gegenstände' : '3 Gegenstände';
   for (const [id, count, crystal] of [['inventory-stone', state.stones, false], ['inventory-crystal', state.crystals, true]]) {
     const slot = document.getElementById(id);
     slot.classList.toggle('empty', count === 0);
@@ -2938,6 +3030,7 @@ function updateRockProgress() {
 
 function shatterRock(rock, impactPosition) {
   const isCrystal = rock.userData.isCrystal === true;
+  audio.play(isCrystal ? 'crystal' : 'rock', 1, impactPosition, rock.userData.hitRadius || 1);
   const fragmentCount = isCrystal ? 30 : THREE.MathUtils.randInt(6, 10);
   const baseRadius = rock.userData.hitRadius || 1;
 
@@ -3087,7 +3180,6 @@ function updateLaser(delta) {
     if (firstPersonWeapon) handLaser.group.rotation.set(0, Math.PI, 0);
   }
   if (firstPersonWeapon) {
-    setDefaultCameraPerspective();
     camera.updateMatrixWorld(true);
     // Keep the actual firing weapon in view, so beams and shots leave its muzzle.
     const loweredAmount = 1 - handLaser.raiseAmount;
@@ -3095,18 +3187,12 @@ function updateLaser(delta) {
     handLaser.group.position.x += weaponSway * 0.012;
     handLaser.group.position.y += weaponBob * 0.009;
   }
-  const targetPitch = firstPersonWeapon ? weaponBob * 0.003 : laserBaseRotation.x + (0.5 - state.aimY) * 0.78;
-  const targetYaw = firstPersonWeapon ? Math.PI + weaponSway * 0.004 : laserBaseRotation.y - (state.aimX - 0.5) * 1.28;
-  if (firstPersonWeapon || !state.running) {
-    laserRestEuler.set(targetPitch, targetYaw, firstPersonWeapon ? weaponSway * 0.012 : laserBaseRotation.z);
-    laserRestQuaternion.setFromEuler(laserRestEuler);
-    handLaser.group.quaternion.slerp(laserRestQuaternion, 1 - Math.exp(-5 * delta));
-  }
+  if (firstPersonWeapon) handLaser.group.rotation.set(0, Math.PI, 0);
+  else handLaser.group.rotation.copy(laserBaseRotation);
 
   handLaser.canFire = !indoors;
   let beamLength = laserRange;
-  if (!state.firstPerson && state.running && state.laserActive) {
-    setDefaultCameraPerspective();
+  if (state.running && state.laserActive) {
     camera.updateMatrixWorld(true);
     laserAimScreen.set(state.aimX * 2 - 1, 1 - state.aimY * 2);
     laserAimRay.setFromCamera(laserAimScreen, camera);
@@ -3115,21 +3201,7 @@ function updateLaser(delta) {
     if (hits.length) laserAimTarget.copy(hits[0].point);
     else laserAimRay.ray.at(laserRange, laserAimTarget);
 
-    // Keep aiming within the forward hemisphere of the character.
-    const targetX = laserAimTarget.x - ship.position.x;
-    const targetZ = laserAimTarget.z - ship.position.z;
-    handLaser.canFire = targetX * Math.sin(state.faceYaw) + targetZ * Math.cos(state.faceYaw) > 0.05;
-
-
-    // Convert the cursor's world target into the animated hand's coordinates.
-    handLaser.group.parent.updateWorldMatrix(true, false);
-    laserAimLocal.copy(laserAimTarget);
-    handLaser.group.parent.worldToLocal(laserAimLocal);
-    laserAimLocal.sub(handLaser.group.position).normalize();
-    laserRestQuaternion.setFromUnitVectors(laserForwardLocal, laserAimLocal);
-    if (handLaser.canFire) {
-      handLaser.group.quaternion.slerp(laserRestQuaternion, 1 - Math.exp(-12 * delta));
-    }
+    // Only the beam aims at the crosshair; the weapon keeps its resting orientation.
     handLaser.group.updateWorldMatrix(true, false);
     laserAimLocal.copy(laserAimTarget);
     handLaser.group.worldToLocal(laserAimLocal);
@@ -3151,14 +3223,9 @@ function updateLaser(delta) {
   // Resetting it here used to visibly snap the beam back to the barrel axis.
   if (state.running && state.laserActive && handLaser.canFire) {
     handLaser.beam.scale.set(1, 1, beamLength / laserRange);
-    if (state.firstPerson) {
-      handLaser.beam.quaternion.identity();
-      handLaser.beam.position.set(0, 0.018, 0.55 + beamLength / 2);
-    } else {
-      laserAimLocal.normalize();
-      handLaser.beam.quaternion.setFromUnitVectors(laserForwardLocal, laserAimLocal);
-      handLaser.beam.position.set(0, 0.018, 0.55).addScaledVector(laserAimLocal, beamLength / 2);
-    }
+    laserAimLocal.normalize();
+    handLaser.beam.quaternion.setFromUnitVectors(laserForwardLocal, laserAimLocal);
+    handLaser.beam.position.set(0, 0.018, 0.55).addScaledVector(laserAimLocal, beamLength / 2);
   }
   handLaser.muzzleFlash.scale.setScalar(0.78 + pulse * 0.45);
   handLaser.emitter.material.emissiveIntensity = 1.5 + nextOpacity * 3.8 + (state.weaponMode === 'shots' && state.laserActive ? 1.4 : 0);
@@ -3171,7 +3238,7 @@ function updateLaser(delta) {
     handLaser.group.updateMatrixWorld(true);
     handLaser.group.localToWorld(laserBeamOrigin.set(0, 0.018, 0.58));
     laserBeamDirection.copy(laserForwardLocal).transformDirection(handLaser.group.matrixWorld).normalize();
-    if (!state.firstPerson) laserBeamDirection.copy(laserAimTarget).sub(laserBeamOrigin).normalize();
+    laserBeamDirection.copy(laserAimTarget).sub(laserBeamOrigin).normalize();
     const hit = findWeaponSurfaceHit(laserBeamOrigin, laserBeamDirection, laserRange);
     if (hit) {
       if (state.beamHitCooldown <= 0 && !hit.worm) {
@@ -3195,10 +3262,11 @@ function updateLaser(delta) {
 
 function emitLaserShot() {
   if (!handLaser || !handLaser.canFire || isInsideBaseBuilding()) return;
+  audio.play('shot');
   handLaser.group.updateMatrixWorld(true);
   handLaser.group.localToWorld(laserMuzzleWorld.set(0, 0.018, 0.58));
   laserShotDirection.copy(laserForwardLocal).transformDirection(handLaser.group.matrixWorld).normalize();
-  if (!state.firstPerson) laserShotDirection.copy(laserAimTarget).sub(laserMuzzleWorld).normalize();
+  laserShotDirection.copy(laserAimTarget).sub(laserMuzzleWorld).normalize();
   laserShotDirection.normalize();
 
   const shot = laserShots[laserShotIndex];
@@ -3374,7 +3442,9 @@ function updateFootEffects(delta) {
 
 const clock = new THREE.Clock();
 
-function resetGame() {
+function resetGame({ preserveSlot = false } = {}) {
+  restartAfterDeath = false;
+  if (!preserveSlot) currentRunHasSave = false;
   clearTimeout(sleepTimer);
   sleepTimer = null;
   sleepFade?.cancel();
@@ -3383,15 +3453,18 @@ function resetGame() {
   sleepOverlay.hidden = true;
   seatedBench = null;
   curseMessage.reset();
+  sandstorm.reset();
   state.health = 100;
   state.hurtCooldown = 0;
   state.hurtFlash = 0;
   document.querySelector('#app').style.setProperty('--hurt-opacity', 0);
-  saveNameInput.value = 'Mein Spielstand';
+  if (!preserveSlot) saveNameInput.value = 'Mein Spielstand';
   refreshLoadButton();
   try {
-    const emptySlot = readSaves(localStorage).findIndex((saved) => !saved);
-    activeSaveSlot = emptySlot < 0 ? 0 : emptySlot;
+    if (!preserveSlot) {
+      const emptySlot = readSaves(localStorage).findIndex((saved) => !saved);
+      activeSaveSlot = emptySlot < 0 ? 0 : emptySlot;
+    }
     saveSlot.value = String(activeSaveSlot);
   } catch { /* Saving reports storage errors in the pause menu. */ }
   dayStartedAt = performance.now();
@@ -3399,6 +3472,9 @@ function resetGame() {
   state.crystals = 0;
   state.laserLevel = 0;
   state.jetpackLevel = 0;
+  state.wormHorns = 0;
+  state.curseLifted = false;
+  document.querySelector('#curse-message').textContent = curseWarningText;
   updateInventoryResources();
   damagedRock = null;
   for (const rock of rocks) rock.userData.laserDamage = 0;
@@ -3446,11 +3522,13 @@ function resetGame() {
 }
 
 function gameOver(reason) {
+  audio.silence(); audio.play('death');
+  state.running = false;
+  restartAfterDeath = true;
   state.laserActive = false;
   state.jetpackActive = false;
   activeKeys.clear();
   if (document.pointerLockElement === canvas) document.exitPointerLock();
-  state.running = false;
   document.querySelector('#app').classList.remove('is-playing');
   state.best = Math.max(state.best, Math.floor(state.score));
   localStorage.setItem('orbital-drift-best', String(state.best));
@@ -3512,6 +3590,7 @@ function updateJetpack(delta) {
   state.flightHeight += state.flightVelocity * delta;
 
   if (state.flightHeight <= 0) {
+    if (state.flightVelocity < -1) audio.play(isInsideBaseBuilding() ? 'metalStep' : 'step', 1.5);
     state.flightHeight = 0;
     state.flightVelocity = Math.max(0, state.flightVelocity);
   } else if (state.flightHeight >= (playerMovement.jetpackMaxHeight + state.jetpackLevel * 3)) {
@@ -3609,14 +3688,14 @@ function moveWithMouse(event) {
 
   const isStandingStill = isPlayerStandingStill();
   if (seatedBench || (isStandingStill && !state.firstPerson && !state.laserActive)) {
-    state.cameraOrbitYaw -= movementX * 0.003;
+    state.cameraOrbitYaw -= movementX * 0.002;
   } else {
     // Rotate the explorer itself without a yaw limit; the follow camera stays behind.
-    state.faceYaw -= movementX * 0.003;
+    state.faceYaw -= movementX * 0.002;
     ship.rotation.y = state.faceYaw;
     state.cameraOrbitYaw = state.faceYaw;
   }
-  state.cameraPitch = THREE.MathUtils.clamp(state.cameraPitch - movementY * 0.0025, minimumCameraPitch(), Math.PI / 2);
+  state.cameraPitch = THREE.MathUtils.clamp(state.cameraPitch - movementY * 0.0018, minimumCameraPitch(), Math.PI / 2);
   state.mouseSteer = 0;
   state.mouseDepth = 0;
   state.mouseMoveUntil = performance.now() + 140;
@@ -4055,8 +4134,6 @@ function updateGame(delta) {
   if (!state.running) {
     ship.rotation.z = Math.sin(clock.elapsedTime * 1.4) * 0.035;
     updateJetpack(delta);
-    updateLaser(delta);
-    updateLaserShots(delta);
     updateRockFragments(delta);
     return;
   }
@@ -4114,7 +4191,7 @@ function updateGame(delta) {
   state.hurtCooldown = Math.max(0, state.hurtCooldown - delta);
   state.hurtFlash = Math.max(0, state.hurtFlash - delta * 2.5);
   const dayElapsed = ((pausedAt ?? performance.now()) - dayStartedAt) / 1000;
-  sandworm.updateDawn(dayElapsed, dayDuration, ship.position, state.faceYaw);
+  if (!state.curseLifted) sandworm.updateDawn(dayElapsed, dayDuration, ship.position, state.faceYaw);
   const wormContact = sandworm.update(delta, ship.position, state.faceYaw);
   if (wormContact === 'mouth') {
     state.health = 0;
@@ -4122,6 +4199,7 @@ function updateGame(delta) {
     return;
   }
   if (wormContact === 'body' && state.hurtCooldown === 0) {
+    audio.play('hurt');
     state.health = Math.max(0, state.health - 50);
     state.hurtCooldown = 1.2;
     state.hurtFlash = 0.65;
@@ -4158,8 +4236,6 @@ function updateGame(delta) {
 
   updateDust(delta);
   updateFootEffects(delta);
-  updateLaser(delta);
-  updateLaserShots(delta);
   updateRockFragments(delta);
 
   for (const tuft of grassTufts) {
@@ -4252,6 +4328,18 @@ function animate() {
   if (isSleeping) { requestAnimationFrame(animate); return; }
   grassWindTime.value = clock.elapsedTime;
   if (!inventory.open && !pauseMenu.open && !tradeMenu.open) updateGame(delta);
+  sandstorm.update(state.running && !inventory.open && !pauseMenu.open && !tradeMenu.open ? delta : 0, ship.position, isInsideBaseBuilding());
+  audio.update({
+    playing: state.running && !inventory.open && !pauseMenu.open && !tradeMenu.open,
+    indoors: isInsideBaseBuilding(), jetpack: state.jetpackBurn, storm: sandstorm.getIntensity(), stormGust: sandstorm.getGust(),
+    moving: !seatedBench && state.flightHeight <= 0.03 && Math.hypot(state.depthVelocity, state.steerVelocity) > 0.16,
+    sprinting: state.sprinting && state.depthVelocity > 0.12,
+    beam: state.laserActive && state.weaponMode === 'beam' && handLaser?.canFire,
+    shake: sandworm.getGroundShake(ship.position),
+    wormDistance: sandworm.object.position.distanceTo(ship.position), wormPresent: sandworm.isPresent(),
+    listenerPosition: camera.position, listenerRight: { x: camera.matrixWorld.elements[0], z: camera.matrixWorld.elements[2] },
+    wormPosition: sandworm.object.position,
+  });
   setDefaultCameraPerspective();
   if (state.running && !inventory.open && !pauseMenu.open && !tradeMenu.open) {
     const grounded = 1 - THREE.MathUtils.smoothstep(state.flightHeight, 0.3, 5);
@@ -4261,6 +4349,16 @@ function animate() {
     camera.position.y += Math.sin(quakeTime * 57) * shake * 0.24;
     camera.position.z += Math.cos(quakeTime * 47) * shake * 0.12;
     camera.rotateZ(Math.sin(quakeTime * 39) * shake * 0.008);
+    const windForce = isInsideBaseBuilding() ? 0 : sandstorm.getIntensity() * sandstorm.getGust();
+    camera.position.x += Math.sin(quakeTime * 5.3) * windForce * 0.025;
+    camera.position.y += Math.sin(quakeTime * 7.1) * windForce * 0.018;
+    camera.rotateZ(Math.sin(quakeTime * 3.7) * windForce * 0.0025);
+  }
+  // Aim and fire using the final rendered camera, including quake movement.
+  if (!inventory.open && !pauseMenu.open && !tradeMenu.open) {
+    camera.updateMatrixWorld(true);
+    updateLaser(delta);
+    updateLaserShots(delta);
   }
   updateFirstPersonCrosshair();
   updateCompass();
@@ -4269,6 +4367,7 @@ function animate() {
   updateRockProgress();
   skyDome.position.copy(camera.position);
   updateSunAndKeyLight();
+  sandstorm.applyAtmosphere();
   updateChestFlashlight();
   sandworm.setDustLighting(hemi, keyLight);
   renderer.render(scene, camera);
@@ -4318,6 +4417,11 @@ window.addEventListener('keydown', (event) => {
   if (event.code === 'KeyF' && !event.repeat && state.running) {
     event.preventDefault();
     if (inventory.open) {
+      const horn = document.querySelector('#worm-horn');
+      if (!horn.hidden && (horn.matches(':hover') || horn === document.activeElement)) {
+        activateWormHorn();
+        return;
+      }
       const bag = document.querySelector('#sleeping-bag');
       if (bag.matches(':hover') || bag === document.activeElement) sleepUntilMorning();
       return;
@@ -4339,6 +4443,7 @@ window.addEventListener('keydown', (event) => {
         if (document.pointerLockElement === canvas) document.exitPointerLock();
         updateInventoryResources();
         document.querySelector('#sleep-status').textContent = '';
+        audio.silence(); audio.play('ui');
         inventory.showModal();
       }
     }
@@ -4358,8 +4463,10 @@ window.addEventListener('keydown', (event) => {
   if (key === 'space') {
     event.preventDefault();
   }
-  if (key === 'space' || event.key === 'Enter') {
-    if (!state.running) resetGame();
+  if ((key === 'space' || event.key === 'Enter') && !state.running) {
+    event.preventDefault();
+    startOrRestartRun();
+    return;
   }
   if (['w', 'a', 's', 'd', 'arrowup', 'arrowleft', 'arrowdown', 'arrowright', 'shift', 'space'].includes(key)) {
     activeKeys.add(key);
@@ -4423,10 +4530,25 @@ loadButton.addEventListener('click', () => {
   loadGame();
 });
 refreshLoadButton();
-startButton.addEventListener('click', () => {
+function startOrRestartRun() {
   captureGameMouse();
+  if (restartAfterDeath) {
+    if (currentRunHasSave) {
+      try {
+        if (readSaves(localStorage)[activeSaveSlot]) {
+          loadSlot.value = String(activeSaveSlot);
+          loadGame();
+          return;
+        }
+      } catch { /* Keep the current slot if the checkpoint cannot be read. */ }
+    }
+    currentRunHasSave = false;
+    resetGame({ preserveSlot: true });
+    return;
+  }
   resetGame();
-});
+}
+startButton.addEventListener('click', startOrRestartRun);
 
 resize();
 sandworm.reset(ship.position, state.faceYaw, state.crystals >= 5);
@@ -4494,11 +4616,12 @@ function refreshTradingTerminal() {
     const price = document.createElement('p'); price.textContent = english
       ? `${item.stones} rocks · ${item.crystals} crystals` : `${item.stones} Steine · ${item.crystals} Kristalle`;
     const button = document.createElement('button'); button.type = 'button'; button.dataset.product = item.id;
-    const maximum = item.id === 'medical' ? state.health >= 100 : item.id === 'laser' ? state.laserLevel >= 3 : state.jetpackLevel >= 2;
+    const maximum = item.id === 'medical' ? state.health >= 100 : item.id === 'laser' ? state.laserLevel >= 3 : item.id === 'jetpack' ? state.jetpackLevel >= 2 : false;
     button.textContent = maximum ? (english ? 'Maximum reached' : 'Maximum erreicht') : (english ? 'Buy' : 'Kaufen');
     button.disabled = maximum || state.stones < item.stones || state.crystals < item.crystals;
     button.addEventListener('click', () => {
       const result = purchase(state, item.id);
+      audio.play(result === 'success' ? 'buy' : 'ui');
       document.querySelector('#trade-status').textContent = result === 'success' ? 'Kauf erfolgreich.' : 'Kauf nicht möglich.';
       updateHud(); updateInventoryResources(); refreshTradingTerminal();
     });
@@ -4512,6 +4635,7 @@ function openTradingTerminal() {
   activeKeys.clear(); updateMovementInputs();
   state.depthVelocity = state.steerVelocity = 0;
   document.querySelector('#trade-status').textContent = '';
+  audio.silence(); audio.play('ui');
   refreshTradingTerminal(); tradeMenu.showModal();
   if (document.pointerLockElement === canvas) document.exitPointerLock();
 }
@@ -4552,6 +4676,7 @@ function toggleBenchSeat() {
     state.faceYaw = bench.yaw;
     state.cameraOrbitYaw = bench.yaw + (state.firstPerson ? 0 : Math.PI / 3);
   }
+  audio.play('seat');
   activeKeys.clear();
   state.depthInput = state.steer = state.depthVelocity = state.steerVelocity = 0;
   state.flightHeight = state.flightVelocity = state.jetpackBurn = 0;
@@ -4593,11 +4718,12 @@ function sleepUntilMorning() {
     return;
   }
   const morningElapsed = elapsed + dayDuration - cycle;
-  sandworm.updateDawn(elapsed, dayDuration, ship.position, state.faceYaw);
+  if (!state.curseLifted) sandworm.updateDawn(elapsed, dayDuration, ship.position, state.faceYaw);
   state.laserActive = state.jetpackActive = false;
   state.depthVelocity = state.steerVelocity = 0;
   activeKeys.clear(); updateMovementInputs();
   curseMessage.hide();
+  audio.silence(); audio.play('sleep');
   isSleeping = true;
   sleepOverlay.hidden = false;
   sleepFade = sleepOverlay.animate([
@@ -4611,7 +4737,7 @@ function sleepUntilMorning() {
     sleepTimer = null;
     // Prepare dawn while still black, before gently revealing the morning.
     dayStartedAt = performance.now() - morningElapsed * 1000;
-    sandworm.updateDawn(morningElapsed, dayDuration, ship.position, state.faceYaw);
+    if (!state.curseLifted) sandworm.updateDawn(morningElapsed, dayDuration, ship.position, state.faceYaw);
     updateSunAndKeyLight();
     updateChestFlashlight();
     renderer.render(scene, camera);
@@ -4624,4 +4750,20 @@ function sleepUntilMorning() {
       captureGameMouse();
     }, 1000);
   }, 6000);
+}
+
+function activateWormHorn() {
+  if (!state.running || !inventory.open || state.wormHorns < 1 || state.curseLifted) return;
+  if (!sandworm.isPresent()) {
+    document.querySelector('#sleep-status').textContent = 'Das Wurmhorn funktioniert nur, wenn der Sandwurm da ist.';
+    return;
+  }
+  audio.play('horn');
+  state.wormHorns -= 1;
+  state.curseLifted = true;
+  sandworm.repel(true);
+  curseMessage.show(freedomMessageText);
+  curseMessage.remember();
+  updateInventoryResources();
+  inventory.close();
 }

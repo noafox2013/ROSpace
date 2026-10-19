@@ -338,3 +338,15 @@ for (const speed of [0, 5]) {
     assert(contact, 'the predicted leap should reach the explorer');
   });
 }
+
+test('the horn requires an awakened worm that has not been repelled', () => {
+  const worm = createSandworm(() => 0);
+  const player = new THREE.Vector3(0, 1, 0);
+  assert.equal(worm.isPresent(), false);
+  worm.reset(player, 0, false);
+  assert.equal(worm.isPresent(), false);
+  worm.awaken(5, player, 0);
+  assert.equal(worm.isPresent(), true);
+  worm.repel(true);
+  assert.equal(worm.isPresent(), false);
+});

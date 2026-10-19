@@ -63,6 +63,7 @@
         <button id="resume-button" type="button">Weiterspielen</button>
         <label for="language-select">Sprache</label>
         <select id="language-select"><option value="de">Deutsch</option><option value="en">English</option></select>
+        <label for="sound-toggle"><input id="sound-toggle" type="checkbox" checked /> Spielsounds</label>
         <label for="save-slot">Aktueller Speicherplatz</label>
         <select id="save-slot" disabled></select>
         <label for="save-name">Name des Spielstands</label>
@@ -114,6 +115,10 @@
             <article class="equipment-card">
               <div class="equipment-icon" aria-hidden="true"><svg viewBox="0 0 64 64" fill="none"><rect x="15" y="12" width="34" height="31" rx="6" stroke="currentColor" stroke-width="3"/><path d="M24 19v16m16-16v16M18 43l-2 7h12l-2-7m12 0-2 7h12l-2-7M21 54v6m22-6v6M29 6h6v6" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg></div>
               <div><span class="equipment-badge">Ausgerüstet</span><h4>Jetpack</h4><p>Erreiche neue Höhen.</p><small>Leertaste halten zum Fliegen</small></div>
+            </article>
+            <article id="worm-horn" class="equipment-card" tabindex="0" aria-label="Wurmhorn" hidden>
+              <div class="equipment-icon" aria-hidden="true"><svg viewBox="0 0 64 64" fill="none"><path d="M12 48C35 49 48 31 49 9C39 28 28 30 16 30Z" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/><path d="M14 35l12 7M22 29l11 7" stroke="currentColor" stroke-width="2"/></svg></div>
+              <div><span class="equipment-badge">Dabei</span><h4>Wurmhorn</h4><p>Am Handelsterminal gekauft.</p><small id="worm-horn-count">0 Stück</small><small>Auswählen und F drücken · Verjagt den Sandwurm</small></div>
             </article>
             <article id="sleeping-bag" class="equipment-card" tabindex="0" aria-label="Schlafsack" aria-describedby="sleeping-bag-hint">
               <div class="equipment-icon" aria-hidden="true"><svg viewBox="0 0 64 64" fill="none"><rect x="17" y="5" width="30" height="54" rx="13" stroke="currentColor" stroke-width="3"/><path d="M18 24h28M18 36h28M19 48h26M36 25v28" stroke="currentColor" stroke-width="2"/><ellipse cx="32" cy="15" rx="8" ry="5" stroke="currentColor" stroke-width="2"/></svg></div>

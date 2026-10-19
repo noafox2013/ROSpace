@@ -533,3 +533,9 @@ button {
 
 #sleep-overlay { position: fixed; inset: 0; z-index: 9999; background: #000; opacity: 0; cursor: none; }
 #sleep-overlay[hidden] { display: none; }
+
+.equipment-card[hidden] { display: none; }
+
+#sandstorm-haze { position: fixed; inset: 0; pointer-events: none; z-index: 2; opacity: 0; background: radial-gradient(ellipse at 35% 40%, #c7945d66, #8d5934cc); }
+
+#curse-message.storm-warning { color: #fff; }
