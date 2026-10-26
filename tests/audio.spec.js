@@ -43,6 +43,31 @@ test('sounds produce audio, mute fades out, and all action sounds run without er
   });
   await page.locator('button').click();
   await expect.poll(() => page.evaluate(() => window.testContext.state)).toBe('running');
+  await page.evaluate(async () => {
+    const response = await fetch('/src/assets/ESM_EMWI_FX_impact_earth_stone_rockslide_dynamite_explosion_03.wav');
+    const buffer = await window.testContext.decodeAudioData(await response.arrayBuffer());
+    window.wormDuration = buffer.duration;
+    const arrival = await fetch('/src/assets/ESM_EMWI_FX_whoosh_earth_rocks_tumble_dark_muffled_crunchy_rumble_05.wav');
+    window.wormArrivalDuration = (await window.testContext.decodeAudioData(await arrival.arrayBuffer())).duration;
+  });
+  for (const [phase, count] of [['emerging', 1], ['diving', 2], ['buried', 2], ['emerging', 3], ['diving', 4]]) {
+    await expect.poll(() => page.evaluate(phase => {
+      const state = { playing: true, jetpack: 0, beam: false, shake: 0, wormDistance: 50, wormPresent: true, wormPhase: phase };
+      window.testAudio.update(state);
+      window.testAudio.update(state);
+      return window.testSampleSources.filter(source => !source.loop && source.buffer?.duration === window.wormDuration).length;
+    }, phase)).toBe(count);
+  }
+  await expect.poll(() => page.evaluate(() => {
+    window.testAudio.update({ playing: true, jetpack: 0, shake: 0, wormDistance: 50, wormPresent: true, wormPhase: 'diving' });
+    return window.testSampleSources.filter(source => !source.loop && source.buffer?.duration === window.wormArrivalDuration).length;
+  })).toBe(1);
+  await page.evaluate(() => {
+    window.testAudio.update({ playing: true, jetpack: 0, shake: 0, wormDistance: 50, wormPresent: false, wormPhase: 'buried' });
+    window.testAudio.update({ playing: true, jetpack: 0, shake: 0, wormDistance: 50, wormPresent: true, wormPhase: 'buried' });
+  });
+  expect(await page.evaluate(() => window.testSampleSources.filter(source =>
+    !source.loop && source.buffer?.duration === window.wormArrivalDuration).length)).toBe(2);
   await page.evaluate(() => window.testAudio.play('horn'));
   await expect.poll(() => page.evaluate(() => window.energy())).toBeGreaterThan(0.001);
   await page.evaluate(() => window.testAudio.setMuted(true));
@@ -106,6 +131,36 @@ test('sounds produce audio, mute fades out, and all action sounds run without er
     window.testAudio.update({ playing: true, storm: 1, jetpack: 0, beam: false, shake: 0, wormDistance: 500 });
     return window.testSampleSources.some(source => source.loop && Math.abs((source.buffer?.duration ?? 0) - 28.496190) < 0.002);
   })).toBe(true);
+  const scannerDuration = await page.evaluate(async () => {
+    const response = await fetch('/src/assets/ScannerBeamRay_S011SF.645.wav');
+    return (await window.testContext.decodeAudioData(await response.arrayBuffer())).duration;
+  });
+  await expect.poll(() => page.evaluate(duration => {
+    window.testAudio.play('scan');
+    return window.testSampleSources.some(source => !source.loop && source.buffer?.duration === duration);
+  }, scannerDuration)).toBe(true);
+  const stormLoop = await page.evaluate(() => {
+    const isStorm = source => source.loop && Math.abs((source.buffer?.duration ?? 0) - 28.496190) < 0.002;
+    const source = window.testSampleSources.find(isStorm);
+    for (let i = 0; i < 10; i++) window.testAudio.update({ playing: true, storm: 1, indoors: i % 2 === 0, jetpack: 0, shake: 0, wormDistance: 500 });
+    const channel = source.buffer.getChannelData(0);
+    const start = Math.round(source.loopStart * source.buffer.sampleRate);
+    const end = Math.floor(source.loopEnd * source.buffer.sampleRate);
+    return { count: window.testSampleSources.filter(isStorm).length, start: source.loopStart, end: source.loopEnd, duration: source.buffer.duration,
+      seam: Math.abs(channel[end - 1] - channel[start - 1]) };
+  });
+  expect(stormLoop.count).toBe(1);
+  expect(stormLoop.start).toBe(2);
+  expect(stormLoop.end).toBeCloseTo(stormLoop.duration - 2);
+  expect(stormLoop.seam).toBeLessThan(0.00001);
+  const doorDuration = await page.evaluate(async () => {
+    const response = await fetch('/src/assets/BRS_Door_Metal_Dumpster_Creak_4.wav');
+    return (await window.testContext.decodeAudioData(await response.arrayBuffer())).duration;
+  });
+  await expect.poll(() => page.evaluate(duration => {
+    window.testAudio.play('door', 1, { x: 3, y: 0, z: 0 });
+    return window.testSampleSources.some(source => !source.loop && source.buffer?.duration === duration);
+  }, doorDuration)).toBe(true);
   await page.evaluate(() => window.testAudio.silence());
   await page.evaluate(() => window.testContext.close());
 });

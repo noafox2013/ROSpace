@@ -1,5 +1,9 @@
 import './styles.css';
+import { duneHeight } from './dunes.js';
 import { createSandstorm } from './sandstorm.js';
+import { abandonedLocation, createAbandonedBuilding } from './abandoned-building.js';
+import { createScanner } from './scanner.js';
+import { createSpacecraft } from './spacecraft.js';
 import { createGameAudio } from './audio.js';
 const audio = createGameAudio();
 for (const event of ['pointerdown', 'keydown']) document.addEventListener(event, () => audio.unlock(), { capture: true });
@@ -21,6 +25,49 @@ import { createSandworm } from './sandworm.js';
 import { createCurseMessage } from './curse-message.js';
 
 const canvas = document.querySelector('#game-canvas');
+const archiveMenu = document.querySelector('#archive-menu');
+let screenshotMode = false;
+let screenshotPending = false;
+const screenshotHint = document.querySelector('#screenshot-hint');
+function setScreenshotMode(active) {
+  if (active === screenshotMode) return;
+  if (active) {
+    pausedAt = performance.now();
+    state.jetpackActive = false;
+    activeKeys.clear();
+    updateMovementInputs();
+    audio.silence();
+  } else {
+    if (pausedAt !== null) dayStartedAt += performance.now() - pausedAt;
+    pausedAt = null;
+  }
+  screenshotMode = active;
+  document.querySelector('#app').classList.toggle('screenshot-mode', active);
+  screenshotHint.hidden = !active;
+  screenshotHint.textContent = 'Screenshotmodus · Linksklick: Bild speichern · O: Zurück';
+  state.laserActive = false;
+}
+function saveGameScreenshot() {
+  if (screenshotPending) return;
+  screenshotPending = true;
+  try {
+    renderer.render(scene, camera);
+    canvas.toBlob(blob => {
+      screenshotPending = false;
+      if (!blob) { screenshotHint.textContent = 'Screenshot konnte nicht gespeichert werden.'; return; }
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `Rust-Mesa-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      screenshotHint.textContent = 'Screenshot gespeichert.';
+    }, 'image/png');
+  } catch {
+    screenshotPending = false;
+    screenshotHint.textContent = 'Screenshot konnte nicht gespeichert werden.';
+  }
+}
 const firstPersonCrosshair = document.querySelector('#first-person-crosshair');
 const rockProgress = document.querySelector('#rock-progress');
 const rockTime = document.querySelector('#rock-time');
@@ -71,6 +118,7 @@ let pausedAt = null;
 
 function openPauseMenu() {
   if (!state.running || pauseMenu.open || isSleeping) return;
+  if (screenshotMode) setScreenshotMode(false);
   pausedAt = performance.now();
   state.laserActive = false;
   state.jetpackActive = false;
@@ -128,7 +176,7 @@ function saveGame() {
     const name = saveNameInput.value.trim().slice(0, 60) || 'Mein Spielstand';
     saveNameInput.value = name;
     const savedState = {};
-    for (const key of ['health', 'score', 'stones', 'crystals', 'laserLevel', 'jetpackLevel', 'wormHorns', 'elapsed', 'flightHeight', 'flightVelocity',
+    for (const key of ['health', 'score', 'stones', 'crystals', 'laserLevel', 'jetpackLevel', 'scannerLevel', 'passKey', 'abandonedUnlocked', 'wormHorns', 'elapsed', 'flightHeight', 'flightVelocity',
       'faceYaw', 'cameraOrbitYaw', 'cameraPitch', 'firstPerson', 'weaponMode']) savedState[key] = state[key];
     const selectedSlot = activeSaveSlot;
     writeSave(localStorage, selectedSlot, {
@@ -171,13 +219,16 @@ function loadGame() {
     currentRunHasSave = true;
     saveSlot.value = String(selectedSlot);
     saveNameInput.value = typeof saved.name === 'string' ? saved.name.slice(0, 60) : 'Mein Spielstand';
-    for (const key of ['health', 'score', 'stones', 'crystals', 'laserLevel', 'jetpackLevel', 'wormHorns', 'elapsed', 'flightHeight', 'flightVelocity',
+    for (const key of ['health', 'score', 'stones', 'crystals', 'laserLevel', 'jetpackLevel', 'scannerLevel', 'passKey', 'abandonedUnlocked', 'wormHorns', 'elapsed', 'flightHeight', 'flightVelocity',
       'faceYaw', 'cameraOrbitYaw', 'cameraPitch']) {
       if (Number.isFinite(saved.state[key])) state[key] = saved.state[key];
     }
     state.health = THREE.MathUtils.clamp(state.health, 1, 100);
     state.laserLevel = Math.floor(THREE.MathUtils.clamp(state.laserLevel, 0, 3));
     state.jetpackLevel = Math.floor(THREE.MathUtils.clamp(state.jetpackLevel, 0, 2));
+    state.passKey = state.passKey >= 1 ? 1 : 0;
+    state.abandonedUnlocked = state.passKey && state.abandonedUnlocked >= 1 ? 1 : 0;
+    state.scannerLevel = Math.floor(THREE.MathUtils.clamp(state.scannerLevel, 0, 3));
     state.wormHorns = Math.max(0, Math.floor(state.wormHorns));
     state.firstPerson = saved.state.firstPerson === true;
     state.weaponMode = saved.state.weaponMode === 'shots' ? 'shots' : 'beam';
@@ -214,10 +265,9 @@ const playerMovement = {
   startZ: 2.15,
   lateralSpeed: 4.8,
   depthSpeed: 3.6,
-  sprintMultiplier: 1.4,
+  sprintMultiplier: 2,
   jetpackLift: 9.5,
   jetpackGravity: 9.504,
-  jetpackMaxHeight: 9.68,
   acceleration: 3.6,
   deceleration: 4.8,
 };
@@ -231,6 +281,9 @@ const state = {
   crystals: 0,
   laserLevel: 0,
   jetpackLevel: 0,
+  scannerLevel: 0,
+  passKey: 0,
+  abandonedUnlocked: 0,
   wormHorns: 0,
   curseLifted: false,
   best: Number(localStorage.getItem('orbital-drift-best') || 0),
@@ -315,9 +368,13 @@ function terrainHeight(x, z) {
   const fineRipples = Math.sin(x * 0.52 + fbm(x * 0.3, z * 0.3) * 4.0) * 0.045;
   const windRipple = Math.sin(x * 1.35 + z * 0.18) * Math.cos(z * 0.92) * 0.018;
   const compactedSoil = (smoothNoise(x * 0.11 - 21, z * 0.11 + 13) - 0.5) * 0.07;
-  const naturalHeight = broadUndulation + crust + occasionalHill + crackedCrust + fineRipples + windRipple + compactedSoil - 1.05;
+  const sandHeight = duneHeight(x, z);
+  const sandCover = THREE.MathUtils.smoothstep(sandHeight, 0, 2);
+  const naturalHeight = broadUndulation + (crust + occasionalHill + crackedCrust + compactedSoil) * (1 - sandCover * 0.92)
+    + fineRipples + windRipple + sandHeight - 1.05;
   const baseBlend = 1 - THREE.MathUtils.smoothstep(Math.hypot(x - baseLocation.x, z - baseLocation.z), 10 * baseLayout.scale, 18 * baseLayout.scale);
-  return THREE.MathUtils.lerp(naturalHeight, baseLocation.ground, baseBlend);
+  const abandonedBlend = 1 - THREE.MathUtils.smoothstep(Math.max(Math.abs(x - abandonedLocation.x) / 9, Math.abs(z - abandonedLocation.z) / 11), 1, 1.65);
+  return THREE.MathUtils.lerp(THREE.MathUtils.lerp(naturalHeight, baseLocation.ground, baseBlend), abandonedLocation.ground, abandonedBlend);
 }
 
 const renderer = new THREE.WebGLRenderer({
@@ -381,12 +438,13 @@ scene.add(hemi);
 const keyLight = new THREE.DirectionalLight(0xf4c086, 2.7);
 keyLight.position.copy(sunDirection).multiplyScalar(keyLightDistance);
 keyLight.castShadow = true;
-keyLight.shadow.mapSize.set(2048, 2048);
+// Thin grass blades need finer shadow texels to avoid disappearing between samples.
+keyLight.shadow.mapSize.set(4096, 4096);
 keyLight.shadow.bias = -0.00008;
 keyLight.shadow.normalBias = 0.035;
 keyLight.shadow.radius = 3.2;
 keyLight.shadow.camera.near = 0.5;
-// Include the ground beneath the player even at the jetpack's maximum height.
+// Include nearby ground in the player's shadow coverage.
 keyLight.shadow.camera.far = keyLightDistance + 48;
 keyLight.shadow.camera.left = -32;
 keyLight.shadow.camera.right = 32;
@@ -482,18 +540,33 @@ const skyDome = new THREE.Mesh(
         vec2 starGrid = vec2(
           atan(starDirection.z, starDirection.x) / 6.2831853 + 0.5,
           asin(clamp(starDirection.y, -1.0, 1.0)) / 3.1415927 + 0.5
-        ) * vec2(180.0, 90.0);
+        ) * vec2(360.0, 180.0);
         vec2 cell = floor(starGrid);
         float seed = starHash(cell);
-        vec2 center = vec2(starHash(cell + 17.0), starHash(cell + 43.0)) * 0.6 + 0.2;
-        float distanceToStar = length(fract(starGrid) - center);
-        float radius = mix(0.045, 0.12, starHash(cell + 71.0));
-        float core = 1.0 - smoothstep(radius * 0.2, radius, distanceToStar);
-        float glow = exp(-distanceToStar * distanceToStar / (radius * radius * 3.0)) * 0.22;
-        float twinkle = 0.78 + 0.22 * sin(starTime * (0.8 + seed) + seed * 90.0);
-        float stars = (core + glow) * step(0.94, seed) * twinkle
-          * smoothstep(0.02, 0.2, h) * nightStrength;
-        vec3 starColor = mix(vec3(0.65, 0.8, 1.0), vec3(1.0, 0.9, 0.7), starHash(cell + 91.0));
+        float latitudeScale = max(0.04, sqrt(max(0.0, 1.0 - starDirection.y * starDirection.y)));
+        vec2 center = vec2(starHash(cell + 17.0), starHash(cell + 43.0)) * 0.76 + 0.12;
+        // Correct longitude compression and density towards the celestial poles.
+        vec2 offset = (fract(starGrid) - center) * vec2(latitudeScale, 1.0);
+        float distanceToStar = length(offset);
+        float magnitude = pow(starHash(cell + 71.0), 8.0);
+        float radius = mix(0.018, 0.075, magnitude);
+        // Pixel filtering keeps tiny stars stable instead of flickering during camera motion.
+        vec2 footprint = fwidth(starGrid) * vec2(latitudeScale, 1.0);
+        float pixelWidth = max(0.012, max(footprint.x, footprint.y));
+        float apparentRadius = max(radius, pixelWidth * 0.6);
+        float core = exp(-distanceToStar * distanceToStar / (apparentRadius * apparentRadius));
+        core *= min(1.0, radius * radius / (apparentRadius * apparentRadius));
+        float glow = exp(-distanceToStar * distanceToStar / (radius * radius * 5.0)) * magnitude * 0.07;
+        float atmosphere = smoothstep(0.0, 0.32, h);
+        float twinkleAmount = mix(0.12, 0.025, atmosphere);
+        float twinkle = 1.0 + twinkleAmount * sin(starTime * (1.1 + seed * 1.7) + seed * 90.0)
+          * sin(starTime * 0.73 + seed * 37.0);
+        float stars = (core + glow) * step(1.0 - 0.065 * latitudeScale, seed)
+          * mix(0.35, 3.0, magnitude) * twinkle * atmosphere * nightStrength;
+        float temperature = starHash(cell + 91.0);
+        vec3 starColor = temperature < 0.22
+          ? mix(vec3(1.0, 0.78, 0.57), vec3(1.0, 0.94, 0.86), temperature / 0.22)
+          : mix(vec3(1.0, 0.98, 0.94), vec3(0.76, 0.86, 1.0), (temperature - 0.22) / 0.78);
         sky += starColor * stars * 2.5;
         if (stormStrength > 0.001) {
           // Project onto a broad ceiling: no spherical seams or isolated sprite puffs.
@@ -895,6 +968,67 @@ const materials = {
 const world = new THREE.Group();
 scene.add(world);
 const planetaryBase = createPlanetaryBase(scene);
+const spacecraft = createSpacecraft(scene, terrainHeight);
+const previousSpacecraftPosition = new THREE.Vector3();
+let aboardSpacecraft = false;
+let spacecraftExitRequested = false;
+let spacecraftView = null;
+const spacecraftHint = document.createElement('button');
+spacecraftHint.id = 'spacecraft-hint';
+spacecraftHint.type = 'button';
+spacecraftHint.hidden = true;
+document.querySelector('#app').append(spacecraftHint);
+spacecraftHint.addEventListener('click', toggleSpacecraft);
+
+function toggleSpacecraft() {
+  if (!state.running || inventory.open || pauseMenu.open || tradeMenu.open || archiveMenu.open) return;
+  if (aboardSpacecraft) {
+    if (!spacecraft.isLanded()) return;
+    if (!spacecraftExitRequested) {
+      spacecraftExitRequested = true;
+      spacecraft.setBoarded(false);
+      audio.play('canopy');
+    }
+    return;
+  }
+  if (!spacecraft.nearEntrance(ship.position) || seatedBench) return;
+  aboardSpacecraft = true;
+  spacecraft.setBoarded(aboardSpacecraft);
+  audio.play('canopy');
+  if (aboardSpacecraft) {
+    spacecraftView = { firstPerson: state.firstPerson, yaw: state.faceYaw, orbit: state.cameraOrbitYaw, pitch: state.cameraPitch };
+    ship.position.copy(spacecraft.exit);
+    state.faceYaw = state.cameraOrbitYaw = 0;
+    state.cameraPitch = 0;
+  }
+  state.depthVelocity = state.steerVelocity = state.flightHeight = state.flightVelocity = 0;
+  state.laserActive = state.jetpackActive = false;
+  if (aboardSpacecraft) {
+    state.jetpackBurn = 0;
+    for (const flame of jetpackFlames.children) flame.visible = false;
+    applySeatedPose();
+    ship.rotation.set(0, 0, 0);
+  }
+  activeKeys.clear();
+  updateMovementInputs();
+  setDefaultCameraPerspective();
+  captureGameMouse();
+}
+function completeSpacecraftExit() {
+  aboardSpacecraft = false;
+  spacecraftExitRequested = false;
+  audio.setCockpit(false);
+  ship.position.copy(spacecraft.exit);
+  state.firstPerson = spacecraftView.firstPerson;
+  state.faceYaw = spacecraftView.yaw;
+  state.cameraOrbitYaw = spacecraftView.orbit;
+  state.cameraPitch = spacecraftView.pitch;
+  activeKeys.clear();
+  updateMovementInputs();
+  setDefaultCameraPerspective();
+  captureGameMouse();
+}
+const abandonedBuilding = createAbandonedBuilding(scene);
 const sandworm = createSandworm(terrainHeight, () => { if (curseMessage.showOnce(curseWarningText)) audio.play('message'); });
 world.add(sandworm.object);
 
@@ -918,11 +1052,13 @@ function updateTerrainTileGeometry(tile, centerX, centerZ) {
     const localZ = positions.getZ(i);
     const worldX = x + centerX;
     const worldZ = localZ + centerZ;
-    // Keep the terrain mesh below the base floor to prevent overlapping surfaces.
+    // Keep terrain below building floors; include a margin for terrain triangles.
     // Walking height stays on the floor through terrainHeight().
     const baseEdge = Math.max(Math.abs(worldX - baseLocation.x), Math.abs(worldZ - baseLocation.z));
     const floorClearance = 0.12 * (1 - THREE.MathUtils.smoothstep(baseEdge, 6.1 * baseLayout.scale, 7.1 * baseLayout.scale));
-    const height = terrainHeight(worldX, worldZ) - floorClearance;
+    const abandonedEdge = Math.max(Math.abs(worldX - abandonedLocation.x) / 8.5, Math.abs(worldZ - abandonedLocation.z) / 10.5);
+    const abandonedClearance = 0.16 * (1 - THREE.MathUtils.smoothstep(abandonedEdge, 1, 1.25));
+    const height = terrainHeight(worldX, worldZ) - Math.max(floorClearance, abandonedClearance);
     const wash = erosionMask(worldX, worldZ);
     positions.setY(i, height);
 
@@ -946,6 +1082,8 @@ function updateTerrainTileGeometry(tile, centerX, centerZ) {
   positions.needsUpdate = true;
   colors.needsUpdate = true;
   tile.geometry.computeVertexNormals();
+  tile.geometry.computeBoundingBox();
+  tile.geometry.computeBoundingSphere();
   tile.position.set(centerX, 0, centerZ);
   tile.userData.centerX = centerX;
   tile.userData.centerZ = centerZ;
@@ -1674,7 +1812,7 @@ function findWeaponSurfaceHit(origin, direction, distance) {
   sandworm.object.updateWorldMatrix(true, true);
   planetaryBase.group.updateWorldMatrix(true, true);
   const wormTargets = sandworm.getLaserTargets();
-  const hit = rockImpactRay.intersectObjects([...rocks, ...terrainTiles, ...mountains, planetaryBase.group, ...wormTargets], true)[0];
+  const hit = rockImpactRay.intersectObjects([...rocks, ...terrainTiles, ...mountains, planetaryBase.group, abandonedBuilding.group, ...wormTargets], true)[0];
   if (!hit) return null;
   let ancestor = hit.object;
   while (ancestor && ancestor !== sandworm.object) ancestor = ancestor.parent;
@@ -1831,7 +1969,8 @@ const grassWindTime = { value: 0 };
 const naturalGrassMaterial = new THREE.MeshStandardMaterial({
   vertexColors: true, roughness: 0.94, metalness: 0, side: THREE.DoubleSide,
 });
-naturalGrassMaterial.onBeforeCompile = (shader) => {
+// Use the same wind deformation for visible blades and their shadow silhouettes.
+function applyGrassWind(shader) {
   shader.uniforms.grassWindTime = grassWindTime;
   shader.vertexShader = `uniform float grassWindTime;
 ${shader.vertexShader}`.replace(
@@ -1845,7 +1984,13 @@ ${shader.vertexShader}`.replace(
       transformed.z += gust * 0.035 * flexibility;
     `,
   );
-};
+}
+naturalGrassMaterial.onBeforeCompile = applyGrassWind;
+const grassDepthMaterial = new THREE.MeshDepthMaterial({
+  depthPacking: THREE.RGBADepthPacking,
+  side: THREE.DoubleSide,
+});
+grassDepthMaterial.onBeforeCompile = applyGrassWind;
 
 for (let i = 0; i < 660; i += 1) {
   const positions = [];
@@ -1916,7 +2061,11 @@ for (let i = 0; i < 660; i += 1) {
   const z = THREE.MathUtils.randFloatSpread(190);
   tuft.position.set(x, terrainHeight(x, z) + 0.015, z);
   tuft.rotation.y = Math.random() * Math.PI * 2;
-  tuft.receiveShadow = true;
+  tuft.castShadow = true;
+  // Folded, wind-deformed ribbons otherwise shadow themselves with unstable
+  // depth comparisons. Keep their cast shadows on the terrain instead.
+  tuft.receiveShadow = false;
+  tuft.customDepthMaterial = grassDepthMaterial;
   grassTufts.push(tuft);
   world.add(tuft);
 }
@@ -1988,8 +2137,7 @@ visorMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.stormStrength = sky.stormStrength;
   const skySource = skyDome.material.fragmentShader;
   const starField = skySource.slice(skySource.indexOf('// Rotate the celestial sphere'),
-    skySource.indexOf('        sky += starColor'))
-    .replace('float radius = mix(0.045, 0.12,', 'float radius = 1.5 * mix(0.045, 0.12,');
+    skySource.indexOf('        sky += starColor'));
   shader.fragmentShader = shader.fragmentShader.replace('#include <common>', `
     #include <common>
     uniform float nightStrength;
@@ -2009,7 +2157,7 @@ visorMaterial.onBeforeCompile = (shader) => {
     }
   `);
 };
-visorMaterial.customProgramCacheKey = () => 'visor-moving-star-reflection-v2';
+visorMaterial.customProgramCacheKey = () => 'visor-moving-star-reflection-v3';
 
 const ship = new THREE.Group();
 ship.scale.setScalar(0.8778);
@@ -3147,7 +3295,7 @@ function isInsideBaseBuilding() {
 
 function updateLaser(delta) {
   if (!handLaser) return;
-  const indoors = isInsideBaseBuilding();
+  const indoors = aboardSpacecraft || isInsideBaseBuilding();
   if (indoors) {
     state.laserActive = false;
     handLaser.visibleUntil = 0;
@@ -3197,7 +3345,7 @@ function updateLaser(delta) {
     laserAimScreen.set(state.aimX * 2 - 1, 1 - state.aimY * 2);
     laserAimRay.setFromCamera(laserAimScreen, camera);
     world.updateMatrixWorld(true);
-    const hits = laserAimRay.intersectObjects([...terrainTiles, ...rocks, ...mountains, planetaryBase.group, ...sandworm.getLaserTargets()], true);
+    const hits = laserAimRay.intersectObjects([...terrainTiles, ...rocks, ...mountains, planetaryBase.group, abandonedBuilding.group, ...sandworm.getLaserTargets()], true);
     if (hits.length) laserAimTarget.copy(hits[0].point);
     else laserAimRay.ray.at(laserRange, laserAimTarget);
 
@@ -3443,6 +3591,11 @@ function updateFootEffects(delta) {
 const clock = new THREE.Clock();
 
 function resetGame({ preserveSlot = false } = {}) {
+  aboardSpacecraft = false;
+  spacecraftExitRequested = false;
+  spacecraft.setBoarded(false, true);
+  spacecraft.resetFlight();
+  audio.setCockpit(false);
   restartAfterDeath = false;
   if (!preserveSlot) currentRunHasSave = false;
   clearTimeout(sleepTimer);
@@ -3472,6 +3625,9 @@ function resetGame({ preserveSlot = false } = {}) {
   state.crystals = 0;
   state.laserLevel = 0;
   state.jetpackLevel = 0;
+  state.scannerLevel = 0;
+  state.passKey = 0;
+  state.abandonedUnlocked = 0;
   state.wormHorns = 0;
   state.curseLifted = false;
   document.querySelector('#curse-message').textContent = curseWarningText;
@@ -3524,6 +3680,7 @@ function resetGame({ preserveSlot = false } = {}) {
 function gameOver(reason) {
   audio.silence(); audio.play('death');
   state.running = false;
+  if (inventory.open) inventory.close();
   restartAfterDeath = true;
   state.laserActive = false;
   state.jetpackActive = false;
@@ -3586,16 +3743,13 @@ function updateJetpack(delta) {
     state.flightVelocity -= playerMovement.jetpackGravity * delta;
   }
 
-  state.flightVelocity = THREE.MathUtils.clamp(state.flightVelocity, -5.8, 5.2);
+  state.flightVelocity = THREE.MathUtils.clamp(state.flightVelocity, -5.8, 5.2 + state.jetpackLevel);
   state.flightHeight += state.flightVelocity * delta;
 
   if (state.flightHeight <= 0) {
-    if (state.flightVelocity < -1) audio.play(isInsideBaseBuilding() ? 'metalStep' : 'step', 1.5);
+    if (state.flightVelocity < -1) audio.play(isInsideBaseBuilding() || abandonedBuilding.inside(ship.position) ? 'metalStep' : 'step', 1.5);
     state.flightHeight = 0;
     state.flightVelocity = Math.max(0, state.flightVelocity);
-  } else if (state.flightHeight >= (playerMovement.jetpackMaxHeight + state.jetpackLevel * 3)) {
-    state.flightHeight = playerMovement.jetpackMaxHeight + state.jetpackLevel * 3;
-    state.flightVelocity = Math.min(0, state.flightVelocity);
   }
 }
 
@@ -3604,7 +3758,35 @@ function minimumCameraPitch() {
   return THREE.MathUtils.lerp(-Math.PI / 3, -Math.PI / 2, airborne);
 }
 
+const buildingCameraRay = new THREE.Raycaster();
+const buildingCameraOrigin = new THREE.Vector3();
+const buildingCameraDirection = new THREE.Vector3();
+
+function preventCameraWallClipping() {
+  buildingCameraOrigin.copy(ship.position).y += 1.25;
+  buildingCameraDirection.subVectors(camera.position, buildingCameraOrigin);
+  const distance = buildingCameraDirection.length();
+  if (distance < 0.001) return;
+  buildingCameraDirection.divideScalar(distance);
+  buildingCameraRay.set(buildingCameraOrigin, buildingCameraDirection);
+  buildingCameraRay.far = distance + 0.35;
+  planetaryBase.group.updateWorldMatrix(true, true);
+  abandonedBuilding.group.updateWorldMatrix(true, true);
+  const hit = buildingCameraRay.intersectObjects([planetaryBase.group, abandonedBuilding.group], true)
+    .find(hit => hit.object.isMesh && !hit.object.material.transparent);
+  if (hit) {
+    // Leave room for the near plane so it cannot slice through the hull.
+    camera.position.copy(buildingCameraOrigin).addScaledVector(buildingCameraDirection, Math.max(0, hit.distance - 0.35));
+  }
+}
+
 function setDefaultCameraPerspective() {
+  if (aboardSpacecraft) {
+    ship.visible = false;
+    camera.position.copy(spacecraft.cockpit);
+    camera.rotation.set(state.cameraPitch, state.cameraOrbitYaw + Math.PI, 0, 'YXZ');
+    return;
+  }
   // Restore the ground limit on landing, even without another mouse movement.
   state.cameraPitch = THREE.MathUtils.clamp(state.cameraPitch, minimumCameraPitch(), Math.PI / 2);
   // The first-person laser is attached to the camera, outside the hidden body.
@@ -3621,20 +3803,22 @@ function setDefaultCameraPerspective() {
       ship.position.y + 1.25,
       ship.position.z + forwardZ * 0.48,
     );
+    preventCameraWallClipping();
     // Explicit yaw keeps the view stable even when looking exactly straight up.
     camera.rotation.set(state.cameraPitch, viewYaw + Math.PI, 0, 'YXZ');
     return;
   }
   const isStandingStill = isPlayerStandingStill();
   const cameraYaw = isStandingStill ? state.cameraOrbitYaw : state.faceYaw;
-  const followDistance = innerWidth < 720 ? 9.5 : 8;
+  const followDistance = innerWidth < 720 ? 6 : 5;
   // Keep the viewing angle stable when starting or stopping movement.
   const lookAhead = innerWidth < 720 ? 9 : 10;
-  const height = (innerWidth < 720 ? 4.5 : 3.9) + state.flightHeight * 0.45;
+  // Follow the explorer's actual elevation, including dunes, roofs and flight.
+  const height = ship.position.y + (innerWidth < 720 ? 3.25 : 2.8);
   const forwardX = Math.sin(cameraYaw);
   const forwardZ = Math.cos(cameraYaw);
   const indoors = isInsideBaseBuilding();
-  const restingPitch = indoors ? -0.32 : -Math.atan2(innerWidth < 720 ? 4.1 : 3.6, followDistance + lookAhead);
+  const restingPitch = indoors ? -0.32 : -Math.atan2(innerWidth < 720 ? 2.9 : 2.45, followDistance + lookAhead);
   // Preserve the normal follow view and reach exactly vertical in both directions.
   const viewPitch = state.cameraPitch >= 0
     ? THREE.MathUtils.lerp(restingPitch, Math.PI / 2, state.cameraPitch / (Math.PI / 2))
@@ -3644,6 +3828,7 @@ function setDefaultCameraPerspective() {
   camera.position.z = ship.position.z - forwardZ * followDistance;
   camera.position.y = height;
   if (indoors) positionBaseCamera(ship.position, cameraYaw, camera.position);
+  preventCameraWallClipping();
   camera.rotation.set(viewPitch, cameraYaw + Math.PI, 0, 'YXZ');
 }
 
@@ -3653,7 +3838,7 @@ function isPlayerStandingStill() {
 
 function updateMovementInputs() {
   if (!state.running) return;
-  if (seatedBench) {
+  if (seatedBench || aboardSpacecraft) {
     state.depthInput = state.steer = 0;
     state.sprinting = state.jetpackActive = false;
     return;
@@ -3678,12 +3863,18 @@ function updateMovementInputs() {
 }
 
 function moveWithMouse(event) {
+  if (screenshotMode) return;
   if (isSleeping) return;
-  if (inventory.open || pauseMenu.open || tradeMenu.open) return;
+  if (inventory.open || pauseMenu.open || (tradeMenu.open || archiveMenu.open)) return;
   updateAimFromPointer(event);
   if (!state.running || event.pointerType === 'touch') return;
   const movementX = event.movementX || 0;
   const movementY = event.movementY || 0;
+  if (aboardSpacecraft) {
+    state.cameraOrbitYaw = THREE.MathUtils.clamp(state.cameraOrbitYaw - movementX * 0.002, -1.2, 1.2);
+    state.cameraPitch = THREE.MathUtils.clamp(state.cameraPitch - movementY * 0.0018, -0.65, 0.8);
+    return;
+  }
   if (Math.abs(movementX) + Math.abs(movementY) < 0.5) return;
 
   const isStandingStill = isPlayerStandingStill();
@@ -3713,8 +3904,17 @@ function updateAimFromPointer() {
 }
 
 function setLaserActive(event, active) {
+  if (aboardSpacecraft) { state.laserActive = false; return; }
+  if (screenshotMode) {
+    state.laserActive = false;
+    if (active && event.button === 0 && event.target === canvas && state.running) {
+      event.preventDefault();
+      saveGameScreenshot();
+    }
+    return;
+  }
   if (isSleeping) return;
-  if (inventory.open || pauseMenu.open || tradeMenu.open) return;
+  if (inventory.open || pauseMenu.open || (tradeMenu.open || archiveMenu.open)) return;
   if (event.button !== 0 || event.pointerType === 'touch') return;
   if (active && state.running && !seatedBench && !state.firstPerson && isPlayerStandingStill()) {
     state.faceYaw = state.cameraOrbitYaw;
@@ -4166,8 +4366,11 @@ function updateGame(delta) {
     state.cameraOrbitYaw = state.faceYaw;
   }
   const previousFlightHeight = state.flightHeight;
-  updateJetpack(delta);
-  updateRunAnimation(delta, movementAmount, movementDirection, sprintAmount);
+  previousSpacecraftPosition.copy(ship.position);
+  if (!aboardSpacecraft) {
+    updateJetpack(delta);
+    updateRunAnimation(delta, movementAmount, movementDirection, sprintAmount);
+  }
   if (seatedBench) applySeatedPose();
 
   state.elapsed += isMoving ? delta : 0;
@@ -4193,12 +4396,12 @@ function updateGame(delta) {
   const dayElapsed = ((pausedAt ?? performance.now()) - dayStartedAt) / 1000;
   if (!state.curseLifted) sandworm.updateDawn(dayElapsed, dayDuration, ship.position, state.faceYaw);
   const wormContact = sandworm.update(delta, ship.position, state.faceYaw);
-  if (wormContact === 'mouth') {
+  if (!aboardSpacecraft && wormContact === 'mouth') {
     state.health = 0;
     gameOver('Der Sandwurm hat dich mit seinem Maul erwischt.');
     return;
   }
-  if (wormContact === 'body' && state.hurtCooldown === 0) {
+  if (!aboardSpacecraft && wormContact === 'body' && state.hurtCooldown === 0) {
     audio.play('hurt');
     state.health = Math.max(0, state.health - 50);
     state.hurtCooldown = 1.2;
@@ -4212,7 +4415,10 @@ function updateGame(delta) {
   clearBaseApproach();
   resolveMountainCollisions();
   resolveRockCollisions();
-  const limitedFlight = seatedBench ? 0 : planetaryBase.resolve(ship.position, state.flightHeight, previousFlightHeight);
+  if (aboardSpacecraft) ship.position.copy(spacecraft.exit);
+  let limitedFlight = seatedBench ? 0 : planetaryBase.resolve(ship.position, state.flightHeight, previousFlightHeight);
+  limitedFlight = abandonedBuilding.resolve(ship.position, limitedFlight, previousFlightHeight, state.abandonedUnlocked >= 1);
+  if (!aboardSpacecraft) limitedFlight = spacecraft.resolve(ship.position, limitedFlight, previousSpacecraftPosition);
   if (limitedFlight < state.flightHeight) state.flightVelocity = Math.min(0, state.flightVelocity);
   else if (limitedFlight > state.flightHeight) state.flightVelocity = Math.max(0, state.flightVelocity);
   state.flightHeight = limitedFlight;
@@ -4228,7 +4434,12 @@ function updateGame(delta) {
     ship.position.copy(seatedBench.seat);
     ship.rotation.set(0, seatedBench.yaw, 0);
   }
-  if (state.flightHeight <= 0.08 && state.flightVelocity <= 0.4 && !seatedBench) {
+  if (aboardSpacecraft) {
+    ship.position.copy(spacecraft.exit);
+    ship.position.y += spacecraft.flight.altitude;
+    ship.rotation.set(0, 0, 0);
+  }
+  if (state.flightHeight <= 0.08 && state.flightVelocity <= 0.4 && !seatedBench && !aboardSpacecraft) {
     emitStepEffects(movementAmount);
   }
 
@@ -4273,7 +4484,7 @@ function resize() {
 }
 
 function updateFirstPersonCrosshair() {
-  firstPersonCrosshair.hidden = !state.running || inventory.open || pauseMenu.open || tradeMenu.open;
+  firstPersonCrosshair.hidden = !state.running || inventory.open || pauseMenu.open || (tradeMenu.open || archiveMenu.open);
   firstPersonCrosshair.style.left = '50%';
   firstPersonCrosshair.style.top = '50%';
 }
@@ -4304,6 +4515,14 @@ function updateCompass() {
   marker.style.left = `${50 + THREE.MathUtils.clamp(offset * 0.65, -34, 34)}%`;
   const markerText = `${offset < -53 ? '‹ ' : ''}⌂ ${Math.round(Math.hypot(dx, dz))} m${offset > 53 ? ' ›' : ''}`;
   if (marker.textContent !== markerText) marker.textContent = markerText;
+  const ruinX = abandonedLocation.x - ship.position.x;
+  const ruinZ = abandonedLocation.z - ship.position.z;
+  const ruinBearing = (THREE.MathUtils.radToDeg(Math.atan2(ruinX, -ruinZ)) + 360) % 360;
+  const ruinOffset = ((ruinBearing - heading + 540) % 360) - 180;
+  const ruinMarker = document.querySelector('#abandoned-compass-marker');
+  ruinMarker.style.left = `${50 + THREE.MathUtils.clamp(ruinOffset * 0.65, -34, 34)}%`;
+  const ruinText = `${ruinOffset < -53 ? '‹ ' : ''}☠ ${Math.round(Math.hypot(ruinX, ruinZ))} m${ruinOffset > 53 ? ' ›' : ''}`;
+  if (ruinMarker.textContent !== ruinText) ruinMarker.textContent = ruinText;
   const base = Math.floor(heading / 15) * 15;
   compassTicks.forEach((tick, index) => {
     const angle = base + (index - 6) * 15;
@@ -4322,26 +4541,53 @@ const benchMarkers = planetaryBase.benches.map(() => {
   return marker;
 });
 const benchProjection = new THREE.Vector3();
+const scanner = createScanner(scene, document.querySelector('#app'), terrainHeight);
+
+function scanSurroundings() {
+  const candidates = rocks.map(object => ({ object, kind: object.userData.isCrystal ? 'crystal' : 'stone', title: object.userData.isCrystal ? 'Kristall' : 'Stein' }));
+  candidates.push({ object: abandonedBuilding.group, kind: 'base', title: 'Verlassenes Gebäude' });
+  candidates.push({ object: planetaryBase.group, kind: 'base', title: 'Planetarische Basis' });
+  candidates.push({ object: spacecraft.group, kind: 'base', title: 'Raumschiff · Kestrel 09' });
+  if (sandworm.isPresent()) candidates.push({ object: sandworm.object, kind: 'worm', title: 'Sandwurm' });
+  if (scanner.start(ship.position, candidates, 100 + state.scannerLevel * 50)) audio.play('scan');
+}
 
 function animate() {
+  if (screenshotMode && !state.running) setScreenshotMode(false);
   const delta = Math.min(clock.getDelta(), 0.04);
   if (isSleeping) { requestAnimationFrame(animate); return; }
+  if (screenshotMode) {
+    renderer.render(scene, camera);
+    requestAnimationFrame(animate);
+    return;
+  }
   grassWindTime.value = clock.elapsedTime;
-  if (!inventory.open && !pauseMenu.open && !tradeMenu.open) updateGame(delta);
-  sandstorm.update(state.running && !inventory.open && !pauseMenu.open && !tradeMenu.open ? delta : 0, ship.position, isInsideBaseBuilding());
+  if (!pauseMenu.open && !tradeMenu.open) {
+    abandonedBuilding.update(state.running ? delta : 0);
+    spacecraft.update(state.running ? delta : 0, {
+      occupied: aboardSpacecraft, exitPending: spacecraftExitRequested,
+      up: activeKeys.has('w') || activeKeys.has('arrowup'),
+      down: activeKeys.has('s') || activeKeys.has('arrowdown'),
+    });
+    if (state.running && spacecraftExitRequested && spacecraft.isCanopyOpen()) completeSpacecraftExit();
+    updateGame(delta);
+  }
+  audio.setCockpit(aboardSpacecraft && spacecraft.isCanopyClosed());
+  sandstorm.update(state.running && !pauseMenu.open && !tradeMenu.open ? delta : 0, ship.position, isInsideBaseBuilding());
   audio.update({
-    playing: state.running && !inventory.open && !pauseMenu.open && !tradeMenu.open,
-    indoors: isInsideBaseBuilding(), jetpack: state.jetpackBurn, storm: sandstorm.getIntensity(), stormGust: sandstorm.getGust(),
+    playing: state.running && !pauseMenu.open && !tradeMenu.open,
+    indoors: isInsideBaseBuilding() || (abandonedBuilding.inside(ship.position) && ship.position.y < abandonedLocation.ground + 6.9), jetpack: state.jetpackBurn, storm: sandstorm.getIntensity(), stormGust: sandstorm.getGust(),
     moving: !seatedBench && state.flightHeight <= 0.03 && Math.hypot(state.depthVelocity, state.steerVelocity) > 0.16,
     sprinting: state.sprinting && state.depthVelocity > 0.12,
     beam: state.laserActive && state.weaponMode === 'beam' && handLaser?.canFire,
     shake: sandworm.getGroundShake(ship.position),
     wormDistance: sandworm.object.position.distanceTo(ship.position), wormPresent: sandworm.isPresent(),
+    wormPhase: sandworm.getSoundPhase(),
     listenerPosition: camera.position, listenerRight: { x: camera.matrixWorld.elements[0], z: camera.matrixWorld.elements[2] },
     wormPosition: sandworm.object.position,
   });
   setDefaultCameraPerspective();
-  if (state.running && !inventory.open && !pauseMenu.open && !tradeMenu.open) {
+  if (state.running && !pauseMenu.open && !tradeMenu.open && !aboardSpacecraft) {
     const grounded = 1 - THREE.MathUtils.smoothstep(state.flightHeight, 0.3, 5);
     const shake = sandworm.getGroundShake(ship.position) * grounded;
     const quakeTime = clock.elapsedTime;
@@ -4355,7 +4601,7 @@ function animate() {
     camera.rotateZ(Math.sin(quakeTime * 3.7) * windForce * 0.0025);
   }
   // Aim and fire using the final rendered camera, including quake movement.
-  if (!inventory.open && !pauseMenu.open && !tradeMenu.open) {
+  if (!pauseMenu.open && !tradeMenu.open) {
     camera.updateMatrixWorld(true);
     updateLaser(delta);
     updateLaserShots(delta);
@@ -4363,8 +4609,28 @@ function animate() {
   updateFirstPersonCrosshair();
   updateCompass();
   updateBenchMarkers();
-  terminalHint.hidden = !state.running || inventory.open || pauseMenu.open || tradeMenu.open || !planetaryBase.canTrade(ship.position);
+  spacecraftHint.hidden = !state.running || inventory.open || pauseMenu.open || tradeMenu.open || archiveMenu.open || (!aboardSpacecraft && !spacecraft.nearEntrance(ship.position));
+  const spacecraftHintText = spacecraftExitRequested ? 'Cockpithaube öffnet sich …'
+    : aboardSpacecraft && !spacecraft.isLanded() ? 'W · Steigen · S · Landen'
+    : aboardSpacecraft && !spacecraft.isCanopyClosed() ? 'Cockpithaube schließt sich …'
+    : aboardSpacecraft ? 'W · Abheben · F · Aussteigen' : 'F · In Raumschiff einsteigen';
+  spacecraftHint.disabled = spacecraftExitRequested;
+  const spacecraftHintMode = spacecraftHintText;
+  if (spacecraftHint.dataset.mode !== spacecraftHintMode) {
+    spacecraftHint.textContent = spacecraftHintText;
+    spacecraftHint.dataset.mode = spacecraftHintMode;
+  }
+  document.querySelector('#archive-hint').hidden = !state.running || inventory.open || pauseMenu.open || (tradeMenu.open || archiveMenu.open) || !abandonedBuilding.nearTerminal(ship.position);
+  abandonedBuilding.setUnlocked(state.abandonedUnlocked >= 1);
+  const abandonedHint = document.querySelector('#abandoned-hint');
+  abandonedHint.hidden = !state.running || inventory.open || pauseMenu.open || (tradeMenu.open || archiveMenu.open) || !abandonedBuilding.nearDoor(ship.position);
+  const accessText = state.abandonedUnlocked >= 1 ? 'Pass-Key erkannt · Zugang freigegeben' : state.passKey >= 1 ? 'F · Tür mit Pass-Key aufschließen' : 'Verschlossen · Pass-Key am Handelsterminal kaufen';
+  if (!abandonedHint.hidden && abandonedHint.dataset.access !== `${state.passKey}:${state.abandonedUnlocked}`) {
+    abandonedHint.textContent = accessText; abandonedHint.dataset.access = `${state.passKey}:${state.abandonedUnlocked}`;
+  }
+  terminalHint.hidden = !state.running || inventory.open || pauseMenu.open || (tradeMenu.open || archiveMenu.open) || !planetaryBase.canTrade(ship.position);
   updateRockProgress();
+  scanner.update(pauseMenu.open || tradeMenu.open ? 0 : delta, camera, ship.position, state.running);
   skyDome.position.copy(camera.position);
   updateSunAndKeyLight();
   sandstorm.applyAtmosphere();
@@ -4377,7 +4643,7 @@ function animate() {
 window.addEventListener('resize', resize);
 function captureGameMouse() {
   if (isSleeping) return;
-  if (inventory.open || pauseMenu.open || tradeMenu.open || deleteDialog.open) return;
+  if (inventory.open || pauseMenu.open || (tradeMenu.open || archiveMenu.open) || deleteDialog.open) return;
   if (document.pointerLockElement === canvas || !canvas.requestPointerLock) return;
   const request = canvas.requestPointerLock();
   request?.catch(() => {});
@@ -4392,7 +4658,7 @@ window.addEventListener('mousemove', (event) => {
 document.addEventListener('pointerlockchange', () => {
   if (document.pointerLockElement !== canvas) {
     state.laserActive = false;
-    if (state.running && !inventory.open && !pauseMenu.open && !tradeMenu.open) openPauseMenu();
+    if (state.running && !inventory.open && !pauseMenu.open && !(tradeMenu.open || archiveMenu.open)) openPauseMenu();
   }
 });
 window.addEventListener('pointerdown', (event) => setLaserActive(event, true));
@@ -4405,15 +4671,26 @@ window.addEventListener('blur', () => {
 });
 window.addEventListener('keydown', (event) => {
   if (isSleeping) { event.preventDefault(); return; }
-  if (deleteDialog.open || tradeMenu.open) return;
+  if (deleteDialog.open || (tradeMenu.open || archiveMenu.open)) return;
   const key = event.code === 'Space' ? 'space' : event.key.toLowerCase();
   if (event.key === 'Escape') {
-    if (inventory.open || pauseMenu.open || tradeMenu.open) return;
+    if (inventory.open || pauseMenu.open || (tradeMenu.open || archiveMenu.open)) return;
     event.preventDefault();
     if (!event.repeat) openPauseMenu();
     return;
   }
   if (pauseMenu.open) return;
+  if (event.code === 'KeyO' && state.running && !inventory.open) {
+    event.preventDefault();
+    if (!event.repeat) setScreenshotMode(!screenshotMode);
+    return;
+  }
+  if (screenshotMode) { event.preventDefault(); return; }
+  if (event.code === 'KeyC' && state.running && !inventory.open && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    event.preventDefault();
+    if (!event.repeat) scanSurroundings();
+    return;
+  }
   if (event.code === 'KeyF' && !event.repeat && state.running) {
     event.preventDefault();
     if (inventory.open) {
@@ -4424,6 +4701,16 @@ window.addEventListener('keydown', (event) => {
       }
       const bag = document.querySelector('#sleeping-bag');
       if (bag.matches(':hover') || bag === document.activeElement) sleepUntilMorning();
+      return;
+    }
+    if (aboardSpacecraft || spacecraft.nearEntrance(ship.position)) { toggleSpacecraft(); return; }
+    if (abandonedBuilding.nearTerminal(ship.position)) { openArchiveTerminal(); return; }
+    if (abandonedBuilding.nearDoor(ship.position)) {
+      if (state.passKey >= 1 && !state.abandonedUnlocked) {
+        state.abandonedUnlocked = 1;
+        abandonedBuilding.setUnlocked(true);
+        audio.play('door', 1, { x: abandonedLocation.x, y: abandonedLocation.ground + 2, z: abandonedLocation.z + 8 });
+      }
       return;
     }
     if (seatedBench || planetaryBase.nearestBench(ship.position)) toggleBenchSeat();
@@ -4443,14 +4730,14 @@ window.addEventListener('keydown', (event) => {
         if (document.pointerLockElement === canvas) document.exitPointerLock();
         updateInventoryResources();
         document.querySelector('#sleep-status').textContent = '';
-        audio.silence(); audio.play('ui');
+        audio.play('ui');
         inventory.showModal();
       }
     }
     return;
   }
-  if (inventory.open || pauseMenu.open || tradeMenu.open) return;
-  if (key === 'p' && !event.repeat) {
+  if (inventory.open || pauseMenu.open || (tradeMenu.open || archiveMenu.open)) return;
+  if (key === 'p' && !event.repeat && !aboardSpacecraft) {
     if (!seatedBench && !state.firstPerson && isPlayerStandingStill()) {
       state.faceYaw = state.cameraOrbitYaw;
     }
@@ -4594,6 +4881,10 @@ document.querySelector('#delete-save-confirm').addEventListener('click', () => {
 
 function clearBaseApproach() {
   for (const object of [...rocks, ...grassTufts, ...hills]) {
+    if (Math.abs(object.position.x - abandonedLocation.x) < 11 && Math.abs(object.position.z - abandonedLocation.z) < 14) {
+      object.position.x = abandonedLocation.x + (object.position.x < abandonedLocation.x ? -16 : 16);
+      object.position.y = terrainHeight(object.position.x, object.position.z) + (rocks.includes(object) ? 0.18 : 0.02);
+    }
     const clearance = hills.includes(object) ? 60 : 12 * baseLayout.scale;
     if (Math.abs(object.position.x) < clearance && Math.abs(object.position.z - baseLocation.z) < clearance) {
       object.position.x += object.position.x < 0 ? -clearance - 4 : clearance + 4;
@@ -4612,11 +4903,11 @@ function refreshTradingTerminal() {
   for (const item of catalog) {
     const card = document.createElement('article');
     const title = document.createElement('h3');
-    title.textContent = (english ? item.english : item.name) + (item.id === 'laser' ? ` (${state.laserLevel}/3)` : item.id === 'jetpack' ? ` (${state.jetpackLevel}/2)` : '');
+    title.textContent = (english ? item.english : item.name) + (item.id === 'laser' ? ` (${state.laserLevel}/3)` : item.id === 'jetpack' ? ` (${state.jetpackLevel}/2)` : item.id === 'scanner' ? ` (${state.scannerLevel}/3)` : '');
     const price = document.createElement('p'); price.textContent = english
       ? `${item.stones} rocks · ${item.crystals} crystals` : `${item.stones} Steine · ${item.crystals} Kristalle`;
     const button = document.createElement('button'); button.type = 'button'; button.dataset.product = item.id;
-    const maximum = item.id === 'medical' ? state.health >= 100 : item.id === 'laser' ? state.laserLevel >= 3 : item.id === 'jetpack' ? state.jetpackLevel >= 2 : false;
+    const maximum = item.id === 'medical' ? state.health >= 100 : item.id === 'laser' ? state.laserLevel >= 3 : item.id === 'jetpack' ? state.jetpackLevel >= 2 : item.id === 'scanner' ? state.scannerLevel >= 3 : item.id === 'passkey' ? state.passKey >= 1 : false;
     button.textContent = maximum ? (english ? 'Maximum reached' : 'Maximum erreicht') : (english ? 'Buy' : 'Kaufen');
     button.disabled = maximum || state.stones < item.stones || state.crystals < item.crystals;
     button.addEventListener('click', () => {
@@ -4629,7 +4920,7 @@ function refreshTradingTerminal() {
   }
 }
 function openTradingTerminal() {
-  if (!state.running || pauseMenu.open || inventory.open || tradeMenu.open || !planetaryBase.canTrade(ship.position)) return;
+  if (!state.running || pauseMenu.open || inventory.open || (tradeMenu.open || archiveMenu.open) || !planetaryBase.canTrade(ship.position)) return;
   pausedAt = performance.now();
   state.laserActive = state.jetpackActive = false;
   activeKeys.clear(); updateMovementInputs();
@@ -4639,6 +4930,20 @@ function openTradingTerminal() {
   refreshTradingTerminal(); tradeMenu.showModal();
   if (document.pointerLockElement === canvas) document.exitPointerLock();
 }
+function openArchiveTerminal() {
+  if (!state.running || inventory.open || pauseMenu.open || tradeMenu.open || archiveMenu.open || !abandonedBuilding.nearTerminal(ship.position)) return;
+  state.laserActive = state.jetpackActive = false;
+  state.mouseMoveUntil = 0; state.mouseSteer = state.mouseDepth = 0;
+  activeKeys.clear(); updateMovementInputs();
+  state.depthVelocity = state.steerVelocity = 0;
+  audio.play('ui');
+  archiveMenu.showModal();
+  if (document.pointerLockElement === canvas) document.exitPointerLock();
+}
+document.querySelector('#archive-close').addEventListener('click', () => archiveMenu.close());
+archiveMenu.addEventListener('close', () => {
+  if (state.running) captureGameMouse();
+});
 terminalHint.addEventListener('click', openTradingTerminal);
 document.querySelector('#trade-close').addEventListener('click', () => tradeMenu.close());
 tradeMenu.addEventListener('close', () => {
@@ -4649,7 +4954,7 @@ tradeMenu.addEventListener('close', () => {
 
 
 function updateBenchMarkers() {
-  const available = state.running && !inventory.open && !pauseMenu.open && !tradeMenu.open;
+  const available = state.running && !inventory.open && !pauseMenu.open && !(tradeMenu.open || archiveMenu.open);
   const nearest = available && !seatedBench ? planetaryBase.nearestBench(ship.position) : null;
   planetaryBase.benches.forEach((bench, index) => {
     const marker = benchMarkers[index];
@@ -4663,7 +4968,7 @@ function updateBenchMarkers() {
   document.querySelector('#stand-hint').hidden = !available || !seatedBench;
 }
 function toggleBenchSeat() {
-  if (!state.running || inventory.open || pauseMenu.open || tradeMenu.open) return;
+  if (!state.running || inventory.open || pauseMenu.open || (tradeMenu.open || archiveMenu.open)) return;
   if (seatedBench) {
     ship.position.copy(seatedBench.stand);
     seatedBench = null;

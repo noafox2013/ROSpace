@@ -752,6 +752,11 @@ export function createSandworm(terrainHeight, onDefeat = () => {}) {
 
   return { object: worm, reset, update, awaken, hitLaser, repel, setDustLighting, getGroundShake, updateDawn, restoreWeakPointProgress,
     isPresent: () => active && !repelled,
+    getSoundPhase: () => {
+      if (!active || (repelled && retreatTime >= 3.2)) return 'buried';
+      if (repelled || cycleTime >= strikeTime) return 'diving';
+      return cycleTime >= leapDuration - strikeTime ? 'emerging' : 'buried';
+    },
     getWeakPointProgress: () => ({ stage: weakPointStage, hits: weakPointHits }), isRepelled: () => repelled,
     getLaserTargets: () => active ? laserTargets.filter(mesh => mesh.visible) : [] };
 }

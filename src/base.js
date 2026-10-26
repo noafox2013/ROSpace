@@ -15,22 +15,28 @@ export function positionBaseCamera(player, yaw, target) {
 }
 
 export const catalog = [
+  { id: 'passkey', name: 'Pass-Key · Verlassenes Gebäude', english: 'Pass key · Abandoned building', stones: 20, crystals: 8 },
   { id: 'wormhorn', name: 'Wurmhorn', english: 'Worm horn', stones: 0, crystals: 30 },
   { id: 'medical', name: 'Medizinpaket · +50 Leben', english: 'Medical kit · +50 health', stones: 5, crystals: 0 },
   { id: 'laser', name: 'Laser-Upgrade · +35 % Schaden', english: 'Laser upgrade · +35% damage', stones: 10, crystals: 3 },
-  { id: 'jetpack', name: 'Jetpack-Upgrade · +3 m Flughöhe', english: 'Jetpack upgrade · +3 m flight height', stones: 15, crystals: 4 },
+  { id: 'jetpack', name: 'Jetpack-Upgrade · +1 m/s Steiggeschwindigkeit', english: 'Jetpack upgrade · +1 m/s climb speed', stones: 15, crystals: 4 },
+  { id: 'scanner', name: 'Scanner-Upgrade · +50 m Reichweite', english: 'Scanner upgrade · +50 m range', stones: 12, crystals: 4 },
 ];
 export function purchase(state, id) {
   const item = catalog.find(item => item.id === id);
   if (!item) return 'invalid';
   if ((id === 'medical' && state.health >= 100) || (id === 'laser' && state.laserLevel >= 3)
-    || (id === 'jetpack' && state.jetpackLevel >= 2)) return 'maximum';
+    || (id === 'jetpack' && state.jetpackLevel >= 2)
+    || (id === 'scanner' && state.scannerLevel >= 3)
+    || (id === 'passkey' && state.passKey >= 1)) return 'maximum';
   if (state.stones < item.stones || state.crystals < item.crystals) return 'funds';
   state.stones -= item.stones;
   state.crystals -= item.crystals;
   if (id === 'medical') state.health = Math.min(100, state.health + 50);
   else if (id === 'laser') state.laserLevel = (state.laserLevel || 0) + 1;
   else if (id === 'wormhorn') state.wormHorns = (state.wormHorns || 0) + 1;
+  else if (id === 'scanner') state.scannerLevel = (state.scannerLevel || 0) + 1;
+  else if (id === 'passkey') state.passKey = 1;
   else state.jetpackLevel = (state.jetpackLevel || 0) + 1;
   return 'success';
 }

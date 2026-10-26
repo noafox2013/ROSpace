@@ -69,3 +69,20 @@ test('worm horns cost 30 crystals each and cannot be bought without funds', () =
   assert.equal(state.wormHorns, 2);
   assert.equal(state.stones, 0);
 });
+
+test('scanner upgrades charge resources, cap at three, and leave jetpack unchanged', () => {
+  const state = { stones: 50, crystals: 20, scannerLevel: 0, jetpackLevel: 0 };
+  for (let level = 1; level <= 3; level++) {
+    assert.equal(purchase(state, 'scanner'), 'success');
+    assert.equal(state.scannerLevel, level);
+  }
+  assert.equal(state.stones, 14);
+  assert.equal(state.crystals, 8);
+  assert.equal(state.jetpackLevel, 0);
+  const before = { ...state };
+  assert.equal(purchase(state, 'scanner'), 'maximum');
+  assert.deepEqual(state, before);
+  const poor = { stones: 0, crystals: 0, scannerLevel: 0 };
+  assert.equal(purchase(poor, 'scanner'), 'funds');
+  assert.equal(poor.scannerLevel, 0);
+});

@@ -1,5 +1,10 @@
 import stormUrl from './assets/FF_ES_fx_sandstorm_ivory.wav?url';
 import windUrl from './assets/Wind_06.wav?url';
+import scannerUrl from './assets/ScannerBeamRay_S011SF.645.wav?url';
+import doorUrl from './assets/BRS_Door_Metal_Dumpster_Creak_4.wav?url';
+import canopyUrl from './assets/CarWindowOpen_BW.52121.wav?url';
+import wormUrl from './assets/ESM_EMWI_FX_impact_earth_stone_rockslide_dynamite_explosion_03.wav?url';
+import wormArrivalUrl from './assets/ESM_EMWI_FX_whoosh_earth_rocks_tumble_dark_muffled_crunchy_rumble_05.wav?url';
 import { createSoundTextures } from './sound-textures.js';
 import laserBeamUrl from './assets/SciFiLaserBeam_S08SF.339.wav?url';
 import crystalBreakUrl from './assets/GlassBreakLarge_SFXB.2341.wav?url';
@@ -9,13 +14,27 @@ import rockBreakUrl from './assets/ESM_GB_fx_foley_one_shot_rockbrk_crafting_fol
 // Local sound design: recorded laser beam plus procedural material textures.
 // Audio is created only after a user gesture; no downloads are required.
 export function createGameAudio() {
-  let context, master, noise, reflections;
+  let context, master, noise, reflections, cockpitFilter, cockpitGain;
+  let inCockpit = false;
+  function setCockpit(value) {
+    if (inCockpit === Boolean(value)) return;
+    inCockpit = Boolean(value);
+    if (!context) return;
+    cockpitFilter.frequency.setTargetAtTime(inCockpit ? 900 : 20000, context.currentTime, 0.16);
+    cockpitGain.gain.setTargetAtTime(inCockpit ? 0.38 : 1, context.currentTime, 0.16);
+  }
   let textures = new Map();
   let laserBuffer = null, laserVoice = null;
   let walkingBuffer = null, indoorWalkingBuffer = null, walkingVoice = null;
   let rockBreakBuffer = null, crystalBreakBuffer = null;
   let windBuffer = null, windVoice = null;
   let stormBuffer = null, stormVoice = null;
+  let scannerBuffer = null, scannerVoice = null;
+  let doorBuffer = null;
+  let canopyBuffer = null, canopyVoice = null;
+  let wormBuffer = null, wormVoice = null, lastWormPhase = 'buried';
+  let wormArrivalBuffer = null, wormArrivalPlayed = false;
+  const wormArrivalVoices = new Set();
   let stepSide = 1;
   let jetSpool = 0, jetFiring = false, wasPlaying = false, lastUpdate = 0;
   let listener = { x: 0, y: 0, z: 0, rightX: 1, rightZ: 0 };
@@ -34,7 +53,12 @@ export function createGameAudio() {
         const limiter = context.createDynamicsCompressor();
         limiter.threshold.value = -16;
         limiter.ratio.value = 6;
-        master.connect(limiter).connect(context.destination);
+        // Apply cabin insulation to the entire mix, including recordings and reverb.
+        cockpitFilter = context.createBiquadFilter(); cockpitFilter.type = 'lowpass';
+        cockpitFilter.Q.value = 0.707;
+        cockpitFilter.frequency.value = inCockpit ? 900 : 20000;
+        cockpitGain = context.createGain(); cockpitGain.gain.value = inCockpit ? 0.38 : 1;
+        master.connect(limiter).connect(cockpitFilter).connect(cockpitGain).connect(context.destination);
         // Quiet, diffuse early reflections instead of a long artificial echo.
         reflections = context.createGain();
         reflections.gain.value = 0.025;
@@ -50,6 +74,31 @@ export function createGameAudio() {
         reflections.connect(room).connect(master);
         noise = context.createBuffer(1, context.sampleRate * 5, context.sampleRate);
         textures = createSoundTextures(context);
+        fetch(canopyUrl)
+          .then(response => { if (!response.ok) throw new Error('Canopy audio unavailable'); return response.arrayBuffer(); })
+          .then(bytes => context.decodeAudioData(bytes))
+          .then(buffer => { canopyBuffer = buffer; })
+          .catch(() => { /* The canopy remains usable if audio loading fails. */ });
+        fetch(doorUrl)
+          .then(response => { if (!response.ok) throw new Error('Door audio unavailable'); return response.arrayBuffer(); })
+          .then(bytes => context.decodeAudioData(bytes))
+          .then(buffer => { doorBuffer = buffer; })
+          .catch(() => { /* The door remains usable if audio loading fails. */ });
+        fetch(scannerUrl)
+          .then(response => { if (!response.ok) throw new Error('Scanner audio unavailable'); return response.arrayBuffer(); })
+          .then(bytes => context.decodeAudioData(bytes))
+          .then(buffer => { scannerBuffer = buffer; })
+          .catch(() => { /* Scanning remains available if audio loading fails. */ });
+        fetch(wormArrivalUrl)
+          .then(response => { if (!response.ok) throw new Error('Sandworm arrival audio unavailable'); return response.arrayBuffer(); })
+          .then(bytes => context.decodeAudioData(bytes))
+          .then(buffer => { wormArrivalBuffer = buffer; })
+          .catch(() => { /* Other worm sounds remain available. */ });
+        fetch(wormUrl)
+          .then(response => { if (!response.ok) throw new Error('Sandworm audio unavailable'); return response.arrayBuffer(); })
+          .then(bytes => context.decodeAudioData(bytes))
+          .then(buffer => { wormBuffer = buffer; })
+          .catch(() => { /* Procedural worm rumble remains available. */ });
         fetch(laserBeamUrl)
           .then(response => { if (!response.ok) throw new Error('Laser audio unavailable'); return response.arrayBuffer(); })
           .then(bytes => context.decodeAudioData(bytes))
@@ -83,7 +132,23 @@ export function createGameAudio() {
         fetch(stormUrl)
           .then(response => { if (!response.ok) throw new Error('Storm audio unavailable'); return response.arrayBuffer(); })
           .then(bytes => context.decodeAudioData(bytes))
-          .then(buffer => { stormBuffer = buffer; })
+          .then(buffer => {
+            // Blend the loop's tail into the audio preceding its start, so the
+            // wrap is continuous and skips the recording's fade-in and fade-out.
+            if (buffer.duration > 5) {
+              const start = Math.round(2 * buffer.sampleRate);
+              const end = Math.floor((buffer.duration - 2) * buffer.sampleRate);
+              const fade = Math.round(0.5 * buffer.sampleRate);
+              for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+                const samples = buffer.getChannelData(channel);
+                for (let i = 0; i < fade; i++) {
+                  const mix = i / (fade - 1);
+                  samples[end - fade + i] = samples[end - fade + i] * (1 - mix) + samples[start - fade + i] * mix;
+                }
+              }
+            }
+            stormBuffer = buffer;
+          })
           .catch(() => { /* Weather continues if audio loading fails. */ });
         const data = noise.getChannelData(0);
         for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
@@ -135,6 +200,40 @@ export function createGameAudio() {
     const now = context.currentTime;
     if (now - (lastPlayed.get(name) ?? -100) < ((name === 'impact' || name === 'groundImpact') ? 0.13 : 0.065)) return;
     lastPlayed.set(name, now);
+    if (name === 'canopy') {
+      stopCanopySound();
+      if (!canopyBuffer) return;
+      const source = context.createBufferSource(); source.buffer = canopyBuffer;
+      // Match the electric window mechanism to the 2.8-second canopy travel.
+      const duration = 2.8;
+      source.playbackRate.value = canopyBuffer.duration / duration;
+      const gain = context.createGain(); gain.gain.value = 0;
+      gain.gain.linearRampToValueAtTime(0.7 * amount, now + 0.035);
+      gain.gain.setValueAtTime(0.7 * amount, now + duration - 0.06);
+      gain.gain.linearRampToValueAtTime(0, now + duration);
+      source.connect(gain).connect(master);
+      const voice = { source, gain }; canopyVoice = voice;
+      source.onended = () => {
+        source.disconnect(); gain.disconnect();
+        if (canopyVoice === voice) canopyVoice = null;
+      };
+      source.start();
+      return;
+    }
+    if (name === 'scan') {
+      if (!scannerBuffer) return;
+      stopScannerSound();
+      const source = context.createBufferSource(); source.buffer = scannerBuffer;
+      const gain = context.createGain(); gain.gain.value = 0.65 * amount;
+      source.connect(gain).connect(master);
+      const voice = { source, gain }; scannerVoice = voice;
+      source.onended = () => {
+        source.disconnect(); gain.disconnect();
+        if (scannerVoice === voice) scannerVoice = null;
+      };
+      source.start();
+      return;
+    }
     const dx = position ? position.x - listener.x : 0;
     const dy = position ? position.y - listener.y : 0;
     const dz = position ? position.z - listener.z : 0;
@@ -147,9 +246,10 @@ export function createGameAudio() {
     const variation = (0.94 + Math.random() * 0.12) * (name === 'rock' ? rockPitch : 1);
     const material = { step: 'sand', metalStep: 'metal', shot: 'exhaust', impact: 'stone', rock: 'stone', crystal: 'glass', hurt: 'cloth', death: 'earth', horn: 'breath', buy: 'cloth', message: 'breath', sleep: 'cloth', seat: 'cloth' }[name] || 'cloth';
     const sound = (options) => layer({ ...options, type: options.type || material, pan: position ? spatialPan : (options.pan ?? 0), wet: interfaceSound ? 0 : 1, air: 18000 / (1 + distance / 18 + behind * 1.8), delay: (options.delay ?? 0) + Math.min(0.5, distance / 343), frequency: (options.frequency ?? 200) * variation, gain: (options.gain ?? 0.15) * amount * attenuation * (0.9 + Math.random() * 0.1) });
-    const recordedBreak = name === 'rock' ? rockBreakBuffer : name === 'crystal' ? crystalBreakBuffer : null;
-    if (recordedBreak) {
-      const source = context.createBufferSource(); source.buffer = recordedBreak;
+    const recordedSound = name === 'rock' ? rockBreakBuffer : name === 'crystal' ? crystalBreakBuffer : name === 'door' ? doorBuffer : null;
+    if (name === 'door' && !recordedSound) return;
+    if (recordedSound) {
+      const source = context.createBufferSource(); source.buffer = recordedSound;
       source.playbackRate.value = name === 'rock' ? rockPitch : 1;
       const gain = context.createGain(); gain.gain.value = 0.85 * amount * attenuation;
       const pan = context.createStereoPanner(); pan.pan.value = spatialPan;
@@ -255,7 +355,7 @@ export function createGameAudio() {
     if (type !== 'noise' && !textures.has(type)) voice.source.frequency.setTargetAtTime(frequency, context.currentTime, 0.18);
     voice.filter.frequency.setTargetAtTime(frequency, context.currentTime, 0.15);
   }
-  function update({ playing, indoors, jetpack, beam, shake, wormDistance, wormPresent, listenerPosition, listenerRight, wormPosition, moving = false, sprinting = false, storm = 0, stormGust = 1 }) {
+  function update({ playing, indoors, jetpack, beam, shake, wormDistance, wormPresent, wormPhase = wormPresent ? 'emerging' : 'buried', listenerPosition, listenerRight, wormPosition, moving = false, sprinting = false, storm = 0, stormGust = 1 }) {
     if (listenerPosition && listenerRight) listener = { ...listenerPosition, rightX: listenerRight.x, rightZ: listenerRight.z };
     const offsetX = (wormPosition?.x ?? listener.x) - listener.x;
     const offsetZ = (wormPosition?.z ?? listener.z) - listener.z;
@@ -263,6 +363,51 @@ export function createGameAudio() {
     roomAmount = indoors ? 0.22 : 0.025;
     if (context) reflections.gain.setTargetAtTime(roomAmount, context.currentTime, 0.25);
     const audible = playing && !globalThis.document?.hidden;
+    if (!wormPresent) wormArrivalPlayed = false;
+    if (audible && wormPresent && !wormArrivalPlayed && wormArrivalBuffer && context?.state === 'running') {
+      const source = context.createBufferSource(); source.buffer = wormArrivalBuffer;
+      const gain = context.createGain(); gain.gain.value = 0;
+      const panner = context.createStereoPanner(); panner.pan.value = wormPan;
+      const filter = context.createBiquadFilter(); filter.type = 'lowpass';
+      source.connect(filter).connect(gain).connect(panner).connect(master);
+      const voice = { source, gain, panner, filter };
+      wormArrivalVoices.add(voice); wormArrivalPlayed = true;
+      source.onended = () => {
+        source.disconnect(); filter.disconnect(); gain.disconnect(); panner.disconnect();
+        wormArrivalVoices.delete(voice);
+      };
+      source.start();
+    }
+    for (const { gain, panner, filter } of wormArrivalVoices) {
+      const distance = Math.max(0, wormDistance || 0);
+      gain.gain.setTargetAtTime(audible && wormPresent ? (indoors ? 0.3 : 0.85) / (1 + distance / 90) : 0, context.currentTime, 0.04);
+      panner.pan.setTargetAtTime(wormPan, context.currentTime, 0.06);
+      filter.frequency.setTargetAtTime((indoors ? 900 : 14000) / (1 + distance / 180), context.currentTime, 0.1);
+    }
+    if (wormPhase === 'buried') lastWormPhase = 'buried';
+    if (!audible) stopWormSound();
+    if (audible && wormPhase !== 'buried' && wormPhase !== lastWormPhase && wormBuffer && context?.state === 'running') {
+      stopWormSound();
+      const source = context.createBufferSource(); source.buffer = wormBuffer;
+      const gain = context.createGain(); gain.gain.value = 0;
+      const panner = context.createStereoPanner(); panner.pan.value = wormPan;
+      const filter = context.createBiquadFilter(); filter.type = 'lowpass';
+      source.connect(filter).connect(gain).connect(panner).connect(master);
+      const voice = { source, gain, panner, filter };
+      wormVoice = voice; lastWormPhase = wormPhase;
+      source.onended = () => {
+        source.disconnect(); filter.disconnect(); gain.disconnect(); panner.disconnect();
+        if (wormVoice === voice) wormVoice = null;
+      };
+      source.start();
+    }
+    if (wormVoice) {
+      const { gain, panner, filter } = wormVoice;
+      const distance = Math.max(0, wormDistance || 0);
+      gain.gain.setTargetAtTime((indoors ? 0.3 : 0.85) / (1 + distance / 90), context.currentTime, 0.04);
+      panner.pan.setTargetAtTime(wormPan, context.currentTime, 0.06);
+      filter.frequency.setTargetAtTime((indoors ? 900 : 14000) / (1 + distance / 180), context.currentTime, 0.1);
+    }
     const level = audible ? 1 : 0;
     const t = context?.currentTime ?? 0;
     const dt = Math.min(0.1, Math.max(0, t - lastUpdate)); lastUpdate = t;
@@ -352,9 +497,11 @@ export function createGameAudio() {
   function updateStormAudio(intensity, indoors = false, gust = 1) {
     if (intensity > 0 && !stormVoice && stormBuffer && context?.state === 'running') {
       const source = context.createBufferSource(); source.buffer = stormBuffer; source.loop = true;
+      source.loopStart = stormBuffer.duration > 5 ? 2 : 0;
+      source.loopEnd = stormBuffer.duration > 5 ? stormBuffer.duration - 2 : stormBuffer.duration;
       const gain = context.createGain(); gain.gain.value = 0;
       const filter = context.createBiquadFilter(); filter.type = 'lowpass';
-      source.connect(filter).connect(gain).connect(master); source.start(); stormVoice = { source, gain, filter };
+      source.connect(filter).connect(gain).connect(master); source.start(0, source.loopStart); stormVoice = { source, gain, filter };
     }
     if (stormVoice) {
       stormVoice.gain.gain.setTargetAtTime(intensity * (indoors ? 0.14 : 0.85) * (0.65 + gust * 0.35), context.currentTime, intensity > 0 ? 0.2 : 0.04);
@@ -362,6 +509,14 @@ export function createGameAudio() {
     }
   }
   function silence() {
+    stopCanopySound();
+    stopScannerSound();
+    for (const voice of wormArrivalVoices) {
+      voice.gain.gain.setTargetAtTime(0, context.currentTime, 0.015);
+      voice.source.stop(context.currentTime + 0.08);
+    }
+    wormArrivalVoices.clear();
+    stopWormSound();
     updateStormAudio(0);
     updateWind(false);
     updateWalking(false);
@@ -372,6 +527,25 @@ export function createGameAudio() {
       voice.depth.gain.setTargetAtTime(0, context.currentTime, 0.03);
     }
   }
+  function stopScannerSound() {
+    if (!scannerVoice) return;
+    const { source, gain } = scannerVoice; scannerVoice = null;
+    gain.gain.setTargetAtTime(0, context.currentTime, 0.015);
+    source.stop(context.currentTime + 0.08);
+  }
+  function stopCanopySound() {
+    if (!canopyVoice) return;
+    const { source, gain } = canopyVoice; canopyVoice = null;
+    gain.gain.cancelScheduledValues(context.currentTime);
+    gain.gain.setTargetAtTime(0, context.currentTime, 0.015);
+    source.stop(context.currentTime + 0.08);
+  }
+  function stopWormSound() {
+    if (!wormVoice) return;
+    const { source, gain } = wormVoice; wormVoice = null;
+    gain.gain.setTargetAtTime(0, context.currentTime, 0.015);
+    source.stop(context.currentTime + 0.08);
+  }
   globalThis.document?.addEventListener('visibilitychange', () => { if (document.hidden) silence(); });
-  return { unlock, play, update, silence, setMuted(value) { muted = value; if (master) master.gain.setTargetAtTime(muted ? 0 : 0.55, context.currentTime, 0.04); } };
+  return { unlock, play, update, silence, setCockpit, setMuted(value) { muted = value; if (master) master.gain.setTargetAtTime(muted ? 0 : 0.55, context.currentTime, 0.04); } };
 }

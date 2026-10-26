@@ -9,11 +9,13 @@
     <div id="app">
       <div id="sleep-overlay" role="status" aria-label="Du schläfst." hidden></div>
       <canvas id="game-canvas" aria-label="Rust Mesa 3D game"></canvas>
+      <div id="screenshot-hint" role="status" hidden>Screenshotmodus · Linksklick: Bild speichern · O: Zurück</div>
       <div id="compass" aria-label="Kompass" hidden>
         <div id="compass-tape" aria-hidden="true"></div>
         <span class="compass-pointer" aria-hidden="true">▼</span>
         <strong id="compass-heading"></strong>
         <span id="base-compass-marker" title="Planetarische Basis"></span>
+        <span id="abandoned-compass-marker" aria-label="Verlassenes Gebäude"></span>
       </div>
       <div id="first-person-crosshair" aria-hidden="true" hidden></div>
       <div id="rock-progress" hidden>
@@ -81,6 +83,17 @@
 
       <div id="stand-hint" hidden>F · Aufstehen</div>
       <button id="terminal-hint" type="button" hidden>F · Handelsterminal öffnen</button>
+      <div id="abandoned-hint" role="status" hidden></div>
+      <div id="archive-hint" hidden>F · Beschädigten Terminal lesen</div>
+      <dialog id="archive-menu" aria-labelledby="archive-title">
+        <p class="archive-eyebrow">KEPLER / 07 · NOTFALLARCHIV</p>
+        <h2 id="archive-title">Letzter Eintrag</h2>
+        <p>Tag 184. Der Sandsturm hat die Solarmodule zerstört. Staub ist in die Kühlung eingedrungen; der Hauptreaktor wurde abgeschaltet.</p>
+        <p>Unter der Station registrierten die Sensoren gewaltige Bewegungen. Kurz darauf brach die Kommunikation ab. Die Besatzung evakuierte zur planetarischen Basis.</p>
+        <p>Die Luftschleuse wurde versiegelt. Wartungszugang nur mit Pass-Key. Dieser Terminal läuft auf der letzten Notstromreserve.</p>
+        <p class="archive-warning">ARCHIV BESCHÄDIGT · WEITERE DATEN NICHT LESBAR</p>
+        <button id="archive-close" type="button">Schließen</button>
+      </dialog>
       <dialog id="trade-menu" aria-labelledby="trade-title">
         <h2 id="trade-title">MESA · Handelsterminal</h2>
         <p>Tausche Rohstoffe gegen Vorräte und dauerhafte Upgrades.</p>
