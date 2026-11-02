@@ -56,7 +56,7 @@ export function createScanner(scene, container, terrainHeight) {
     camera.updateMatrixWorld(true);
     for (const target of targets) {
       if (target.object.position.distanceTo(origin) <= radius) target.detected = true;
-      projected.copy(target.object.position); projected.y += target.kind === 'base' ? 5 : 2;
+      projected.copy(target.object.position); projected.y += target.kind === 'base' ? 5 : target.kind === 'blue-crystal' ? 0.9 : 2;
       projected.project(camera);
       target.label.hidden = !target.detected || !target.object.visible || projected.z < -1 || projected.z > 1 || Math.abs(projected.x) > 0.96 || Math.abs(projected.y) > 0.92;
       target.label.style.left = `${(projected.x * 0.5 + 0.5) * 100}%`;

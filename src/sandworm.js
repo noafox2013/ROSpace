@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 // Local +Z points out of the mouth; each segment follows the leap trajectory.
-export function createSandworm(terrainHeight, onDefeat = () => {}) {
+export function createSandworm(terrainHeight, onDefeat = () => {}, buildings = []) {
   const worm = new THREE.Group();
   worm.name = 'sandworm';
   worm.visible = false;
@@ -141,7 +141,7 @@ export function createSandworm(terrainHeight, onDefeat = () => {}) {
       emissiveIntensity: 1.5, roughness: 0.45 }),
   );
   weakPoint.name = 'sandworm-weak-point';
-  weakPoint.scale.setScalar(size * 0.32);
+  weakPoint.scale.setScalar(size * 0.64);
   const weakPointRing = new THREE.Mesh(
     new THREE.TorusGeometry(2.1, 0.09, 8, 64),
     new THREE.MeshBasicMaterial({ color: 0xffa34b, transparent: true,
@@ -393,8 +393,13 @@ export function createSandworm(terrainHeight, onDefeat = () => {}) {
   worm.add(dust);
   let dustCursor = 0;
   const breachPoint = new THREE.Vector3();
+  const previousBreachPoint = new THREE.Vector3();
 
   function emitDust(position, count, impact) {
+    // Underground movement beneath foundations must not eject dust indoors.
+    if (buildings.some(bounds => Math.hypot(
+      Math.max(bounds.min.x - position.x, 0, position.x - bounds.max.x),
+      Math.max(bounds.min.z - position.z, 0, position.z - bounds.max.z)) < size * 6)) return;
     quakeOrigin.copy(position);
     quakeStrength = Math.max(quakeStrength, count >= 80 ? 3.5 : 0.7);
     emitSand(position, Math.min(100, Math.ceil(count * 0.3)));
@@ -426,11 +431,10 @@ export function createSandworm(terrainHeight, onDefeat = () => {}) {
   function updateDust(delta) {
     for (let segment = 0; segment <= segmentCount; segment += 1) {
       const delay = segment === 0 ? 0 : (segment + 1) * segmentDelay;
-      const progress = THREE.MathUtils.clamp((cycleTime - delay) / leapDuration, 0, 1);
-      const earlierProgress = THREE.MathUtils.clamp((cycleTime - delta - delay) / leapDuration, 0, 1);
-      const sink = repelled ? THREE.MathUtils.smoothstep(retreatTime, 0, 3) * 110 : 0;
-      const height = -24 + 64 * 4 * progress * (1 - progress) - sink;
-      const earlierHeight = -24 + 64 * 4 * earlierProgress * (1 - earlierProgress) - sink;
+      sampleLeap(cycleTime - delay, breachPoint);
+      sampleLeap(cycleTime - delta - delay, previousBreachPoint);
+      const height = breachPoint.y - terrainHeight(breachPoint.x, breachPoint.z);
+      const earlierHeight = previousBreachPoint.y - terrainHeight(previousBreachPoint.x, previousBreachPoint.z);
       // Emit at the outer surface's first contact, rather than waiting for its center.
       const fraction = Math.max(0, segment - 1) / (segmentCount - 1);
       const contactRadius = segment === 0 ? size * 3.4
@@ -440,7 +444,6 @@ export function createSandworm(terrainHeight, onDefeat = () => {}) {
       const impact = height < earlierHeight
         && earlierHeight - contactRadius > 0 && height - contactRadius <= 0;
       if (emerging || impact) {
-        sampleLeap(cycleTime - delay, breachPoint);
         // Both breaking out and landing throw up the same dense, lingering cloud.
         emitDust(breachPoint, segment === 0 ? 300 : 7, true);
       }
@@ -536,7 +539,20 @@ export function createSandworm(terrainHeight, onDefeat = () => {}) {
     const length = Math.hypot(landing.x - launch.x, landing.z - launch.z) || 1;
     target.x += (landing.z - launch.z) / length * lateral;
     target.z -= (landing.x - launch.x) / length * lateral;
-    target.y = terrainHeight(target.x, target.z) - 24 + 64 * 4 * progress * (1 - progress);
+    const terrain = terrainHeight(target.x, target.z);
+    target.y = terrain - 24 + 64 * 4 * progress * (1 - progress);
+    // Use the same continuous underground route for the head and every segment.
+    // Clearance includes the mouth, horns, spines and the enlarged weak points.
+    for (const bounds of buildings) {
+      const distance = Math.hypot(
+        Math.max(bounds.min.x - target.x, 0, target.x - bounds.max.x),
+        Math.max(bounds.min.z - target.z, 0, target.z - bounds.max.z));
+      if (distance >= size * 6 + 22) continue;
+      const influence = THREE.MathUtils.smoothstep(distance, size * 6, size * 6 + 22);
+      const ground = Math.min(terrain, bounds.min.y);
+      const ceiling = THREE.MathUtils.lerp(ground - size * 7, ground + 40, influence);
+      target.y = Math.min(target.y, ceiling);
+    }
     if (repelled) target.y -= THREE.MathUtils.smoothstep(retreatTime, 0, 3) * 110;
     return target;
   }
@@ -648,7 +664,7 @@ export function createSandworm(terrainHeight, onDefeat = () => {}) {
     pose();
   }
 
-  function update(delta, player, yaw) {
+  function update(delta, player, yaw, sheltered = false) {
     if (!active) return null;
     quakeStrength *= Math.exp(-delta * 1.7);
     time += delta;
@@ -679,6 +695,8 @@ export function createSandworm(terrainHeight, onDefeat = () => {}) {
     if (cycleTime < 0.35) aimLanding(player, yaw, Math.max(0, strikeTime - cycleTime));
     pose();
     updateDust(delta);
+    // Keep the worm moving outside without biting or pushing sheltered players.
+    if (sheltered) return null;
     // Test the mouth before resolving body contact so a bite always takes priority.
     const localPlayer = new THREE.Vector3().copy(player).sub(worm.position)
       .applyQuaternion(head.quaternion.clone().invert()).divideScalar(size);

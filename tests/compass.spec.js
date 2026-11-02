@@ -17,7 +17,7 @@ test('compass follows the view across north and fits a narrow screen', async ({ 
   await page.locator('#start-button').click();
   await expect(page.locator('#compass-heading')).toHaveText('N · 0°');
   await page.evaluate(() => window.dispatchEvent(new MouseEvent('mousemove', {
-    movementX: Math.PI / 2 / 0.003, movementY: 0, bubbles: true,
+    movementX: Math.PI / 2 / 0.002, movementY: 0, bubbles: true,
   })));
   await expect(page.locator('#compass-heading')).toHaveText('O · 90°');
   await page.keyboard.press('p');

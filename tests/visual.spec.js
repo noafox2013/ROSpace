@@ -1,3 +1,4 @@
+import { writeFileSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
 
 const viewports = [
@@ -58,6 +59,29 @@ for (const viewport of viewports) {
       hasTouch: viewport.hasTouch,
     });
     const page = await context.newPage();
+    const errors = [];
+    page.on('pageerror', error => errors.push(error.message));
+    page.on('console', message => { if (message.type() === 'error' && /shader|WebGLProgram/i.test(message.text())) errors.push(message.text()); });
+    if (process.env.ROSPACE_CAPTURE && viewport.name === 'desktop') {
+      await page.route('**/src/main.js*', async route => {
+        const response = await route.fetch();
+        await route.fulfill({ response, body: await response.text() + `
+          window.captureSoil = () => {
+            const position=camera.position.clone(), rotation=camera.quaternion.clone();
+            const day=dayStartedAt, ratio=renderer.getPixelRatio();
+            dayStartedAt=performance.now()-(daylightDuration*0.4-initialSunAngle/Math.PI*daylightDuration)*1000;
+            updateSunAndKeyLight();
+            const x=spacecraft.group.position.x-18, z=spacecraft.group.position.z+12;
+            const y=terrainHeight(x,z);
+            camera.position.set(x,y+1.3,z+3.2); camera.lookAt(x,y+0.1,z-1);
+            skyDome.position.copy(camera.position); renderer.setPixelRatio(1);
+            renderer.render(scene,camera); const data=canvas.toDataURL();
+            camera.position.copy(position); camera.quaternion.copy(rotation); dayStartedAt=day;
+            renderer.setPixelRatio(ratio); return data;
+          };
+        ` });
+      });
+    }
 
     await page.goto('http://127.0.0.1:5173/');
     await expect(page.locator('#overlay-title')).toBeVisible();
@@ -77,6 +101,11 @@ for (const viewport of viewports) {
     expect(stats.nonBlackPixels).toBeGreaterThan(120);
     expect(stats.brightPixels).toBeGreaterThan(0);
     expect(stats.colors).toBeGreaterThan(5);
+    if (process.env.ROSPACE_CAPTURE && viewport.name === 'desktop') {
+      const data=await page.evaluate(() => window.captureSoil());
+      writeFileSync('/tmp/rospace-textured-ground.png',Buffer.from(data.split(',')[1],'base64'));
+    }
+    expect(errors).toEqual([]);
     await context.close();
   });
 }

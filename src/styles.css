@@ -369,8 +369,10 @@ button {
 .equipment-card small { display: block; font-size: 10px; color: #a8917b; }
 .inventory-slot { position: relative; min-width: 0; min-height: 270px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 20px 14px; border: 1px solid #73583f; border-radius: 12px; background: radial-gradient(ellipse at 50% 30%, #8b67451c, transparent 75%); }
 #inventory-crystal { border-color: #795689; background: radial-gradient(ellipse at 50% 30%, #9f5fcb20, transparent 75%); }
+#inventory-blue-crystal { border-color: #4385a6; background: radial-gradient(ellipse at 50% 30%, #339fdf20, transparent 75%); }
 .resource-kind { position: absolute; top: 12px; left: 14px; font-size: 10px; color: #bba58e; }
 #inventory-crystal .resource-kind { color: #c3a0e8; }
+#inventory-blue-crystal .resource-kind { color: #73d5ff; }
 .inventory-slot strong { font-size: 14px; }
 .inventory-slot small { color: #e6c397; font-size: 12px; font-variant-numeric: tabular-nums; }
 .inventory-slot.empty small { color: #a39384; }
@@ -415,7 +417,7 @@ button {
 #pause-menu button:focus-visible { outline: 2px solid #f0a95f; outline-offset: 2px; }
 #save-message { margin-bottom: 0; font-size: 13px; color: #cbb79e; }
 .overlay button[hidden] { display: none; }
-#app:has(#pause-menu[open]), #app:has(#trade-menu[open]) { cursor: auto; }
+#app:has(#pause-menu[open]), #app:has(#trade-menu[open]), #app:has(#sell-menu[open]) { cursor: auto; }
 #pause-menu label { display: block; margin-top: 18px; font-size: 13px; color: #cbb79e; }
 #save-name, #language-select, #save-slot, #load-slot {
   width: 100%;
@@ -451,7 +453,7 @@ button {
   border-radius: 12px;
   background: #24120ded;
   box-shadow: 0 12px 60px #0009;
-  color: #d41424;
+  color: #fff;
   font-size: clamp(22px, 3vw, 30px);
   font-weight: 700;
   line-height: 1.6;
@@ -485,7 +487,7 @@ button {
 .game-messages { border-left: 1px solid #73583f; padding-left: 28px; min-width: 0; }
 #game-messages-empty { color: #cbb79e; font-size: 14px; }
 #game-message-list { list-style: none; margin: 0; padding: 0; max-height: 380px; overflow-y: auto; }
-#game-message-list li { padding: 16px; border: 1px solid #73583f; border-radius: 10px; background: #191410; color: #f0a488; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+#game-message-list li { padding: 16px; border: 1px solid #73583f; border-radius: 10px; background: #191410; color: #fff; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
 @media (max-width: 700px) {
   .pause-layout { grid-template-columns: minmax(0, 1fr); gap: 24px; }
   .game-messages { border-left: 0; border-top: 1px solid #73583f; padding: 24px 0 0; }
@@ -512,18 +514,18 @@ button {
 #terminal-hint[hidden] { display: none; }
 #spacecraft-hint { position: fixed; left: 50%; bottom: 18%; transform: translateX(-50%); z-index: 4; padding: 12px 20px; border: 1px solid #93e6ff; border-radius: 9px; background: #142328e8; color: #c6f0ff; cursor: pointer; }
 #spacecraft-hint[hidden] { display: none; }
-#trade-menu { cursor: auto; width: min(700px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 28px; border: 1px solid #77b8aa; border-radius: 16px; background: #192626; color: #ecf4df; }
-#trade-menu::backdrop { cursor: auto; background: #08100fd1; backdrop-filter: blur(5px); }
-#trade-menu h2 { color: #83ffe2; margin-top: 0; }
+#trade-menu, #sell-menu { cursor: auto; width: min(700px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 28px; border: 1px solid #77b8aa; border-radius: 16px; background: #192626; color: #ecf4df; }
+#trade-menu::backdrop, #sell-menu::backdrop { cursor: auto; background: #08100fd1; backdrop-filter: blur(5px); }
+#trade-menu h2, #sell-menu h2 { color: #83ffe2; margin-top: 0; }
 #trade-products { display: grid; gap: 12px; margin: 20px 0; }
 #trade-products article { padding: 16px; border: 1px solid #486b63; border-radius: 10px; background: #101a1a; }
 #trade-products h3 { font-size: 16px; margin: 0 0 8px; }
 #trade-products p { color: #c2c8ab; font-size: 13px; }
-#trade-menu button { padding: 10px 20px; border: 1px solid #79b7a6; border-radius: 7px; background: #2b5447; color: #efffe9; cursor: pointer; }
-#trade-menu button:disabled { opacity: 0.45; cursor: not-allowed; }
-#trade-menu button:focus-visible { outline: 2px solid #83ffe2; outline-offset: 3px; }
+#trade-menu button, #sell-menu button { padding: 10px 20px; border: 1px solid #79b7a6; border-radius: 7px; background: #2b5447; color: #efffe9; cursor: pointer; }
+#trade-menu button:disabled, #sell-menu button:disabled { opacity: 0.45; cursor: not-allowed; }
+#trade-menu button:focus-visible, #sell-menu button:focus-visible { outline: 2px solid #83ffe2; outline-offset: 3px; }
 #trade-status { min-height: 24px; color: #83ffe2; }
-@media (max-width: 900px) { #app.is-playing .hud { top: calc(max(14px, env(safe-area-inset-top)) + 100px); } }
+@media (max-width: 900px) { #app.is-playing .hud { top: calc(max(14px, env(safe-area-inset-top)) + 160px); } }
 
 .bench-interaction { position: fixed; z-index: 4; transform: translate(-50%, -100%); width: 32px; height: 32px; display: grid; place-items: center; border: 2px solid #d0ffe9; border-radius: 50%; background: #142328dc; color: #e8fff5; font-size: 15px; font-weight: 800; box-shadow: 0 2px 12px #0008; pointer-events: none; }
 .bench-interaction[hidden], #stand-hint[hidden] { display: none; }
@@ -540,7 +542,7 @@ button {
 
 #sandstorm-haze { position: fixed; inset: 0; pointer-events: none; z-index: 2; opacity: 0; background: radial-gradient(ellipse at 35% 40%, #c7945d66, #8d5934cc); }
 
-#curse-message.storm-warning { color: #fff; }
+#curse-message.is-curse, #game-message-list li.is-curse { color: #d41424; }
 
 #app.screenshot-mode > :not(#game-canvas):not(#screenshot-hint) {
   visibility: hidden !important;
@@ -586,6 +588,7 @@ button {
 }
 .scan-marker strong { display: block; text-align: center; font-size: 11px; }
 .scan-marker.crystal { color: #d3afff; }
+.scan-marker.blue-crystal { color: #73d5ff; }
 .scan-marker.worm { color: #ff9b75; }
 .scan-marker.base { color: #ffdb97; }
 
@@ -593,7 +596,7 @@ button {
   position: absolute; top: 83px; transform: translateX(-50%);
   white-space: nowrap; color: #ffc39d; font-size: 12px;
 }
-#compass { height: 108px; }
+#compass { height: 148px; }
 #abandoned-hint {
   position: fixed; bottom: 18%; left: 50%; transform: translateX(-50%);
   padding: 12px 18px; border: 1px solid #bd9473; border-radius: 8px;
@@ -617,3 +620,54 @@ button {
   padding: 12px 18px; border: 1px solid #72b6b3; border-radius: 8px;
   background: #102021ed; color: #beeee2; pointer-events: none;
 }
+
+.spacecraft-objective { padding: 14px 16px; border: 1px solid #b4814f66; border-radius: 10px; color: #e6bd8c; background: #d5903c0a; font-size: 13px; line-height: 1.6; }
+#spacecraft-hint { max-width: min(640px, calc(100vw - 24px)); line-height: 1.5; }
+
+#cors-hud { color: #f1cb7c; font-variant-numeric: tabular-nums; font-size: 12px; }
+#trade-sales { display: grid; gap: 12px; margin: 16px 0; }
+#trade-sales article { padding: 14px; border: 1px solid #486b63; border-radius: 10px; }
+#trade-sales h3 { margin: 0 0 10px; font-size: 14px; }
+#trade-sales button { margin: 0 8px 6px 0; }
+
+#trade-sell-open { display: block; margin-top: 14px; }
+
+#watchtower-compass-marker { position:absolute; top:104px; transform:translateX(-50%); white-space:nowrap; color:#96ded9; font-size:12px; }
+#watchtower-hint { position:fixed; bottom:18%; left:50%; transform:translateX(-50%); padding:12px 20px; border:1px solid #89d3ca; border-radius:9px; background:#13282bea; color:#e0f5eb; cursor:pointer; z-index:4; }
+#watchtower-hint[hidden] { display:none; }
+#watchtower-lift-hint { position:fixed; bottom:18%; left:50%; transform:translateX(-50%); max-width:calc(100vw - 30px); padding:14px 22px; border:1px solid #7df4e4; border-radius:10px; background:#0b242fee; box-shadow:0 0 20px #61ded433; color:#fff; cursor:pointer; z-index:4; }
+#watchtower-lift-hint[hidden] { display:none; }
+#watchtower-lift-hint:disabled { cursor:default; border-color:#4c878c; }
+#app:has(#watchtower-menu[open]), #app.is-playing.is-first-person:has(#watchtower-menu[open]) { cursor:auto; }
+#watchtower-menu { width:min(660px,calc(100vw - 32px)); max-height:calc(100dvh - 32px); padding:30px; border:1px solid #5b8b8d; border-radius:18px; background:linear-gradient(145deg,#182d32,#101d23); color:#edf8f4; cursor:auto; }
+#watchtower-menu::backdrop { background:#081318d4; backdrop-filter:blur(8px); cursor:auto; }
+.tower-terminal-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+.tower-terminal-eyebrow { margin:0 0 8px; color:#8badae; font-size:10px; letter-spacing:2px; }
+#watchtower-title { margin:0; font-size:25px; }
+.tower-terminal-ready { color:#a7d8b7; font-size:11px; }
+.tower-terminal-ready::before { content:'●'; margin-right:7px; color:#a7d8b7; }
+.tower-terminal-intro { color:#a0b5b8; margin:25px 0 15px; font-size:13px; }
+#treasure-scan { display:flex; align-items:center; gap:20px; width:100%; padding:25px 20px; text-align:left; color:#e5f6ef; background:#203b42; border:1px solid #527b7e; border-radius:12px; cursor:pointer; }
+#treasure-scan:hover, #treasure-scan[aria-pressed='true'] { background:#294d53; border-color:#9cddd1; }
+#treasure-scan:focus-visible, #watchtower-close:focus-visible { outline:2px solid #9cddd1; outline-offset:4px; }
+#treasure-scan svg { width:54px; flex-shrink:0; stroke:currentColor; stroke-width:1.4; color:#9cddd1; }
+#treasure-scan strong { display:block; font-size:20px; margin-bottom:7px; }
+#treasure-scan small { color:#acc3c4; font-size:12px; }
+#treasure-scan > span:last-child { margin-left:auto; font-size:25px; color:#9cddd1; }
+#watchtower-status { min-height:22px; color:#fff; font-size:13px; }
+#watchtower-close { padding:11px 18px; border:1px solid #587779; border-radius:8px; background:#21373c; color:#e5f5ef; cursor:pointer; }
+#treasure-compass-marker { position:absolute; top:122px; transform:translateX(-50%); white-space:nowrap; color:#ffe0a0; font-size:11px; font-weight:700; line-height:20px; padding:0 5px; border-radius:4px; background:#9c6a273f; }
+#treasure-compass-marker[hidden], #treasure-marker[hidden], #treasure-hint[hidden], #treasure-scan-progress[hidden] { display:none; }
+#treasure-marker { position:fixed; transform:translate(-50%,-50%); min-width:155px; padding:8px 10px; border:2px solid #f4cc7e; border-radius:9px; background:#21190bf0; box-shadow:0 2px 18px #0009,0 0 15px #efbb4b45; text-align:center; color:#fff; pointer-events:none; z-index:5; }
+#treasure-marker > span { display:block; margin:auto; width:32px; line-height:32px; font-size:32px; color:#ffdb83; }
+#treasure-marker .treasure-waypoint-arrow { display:none; }
+#treasure-marker.is-offscreen .treasure-waypoint-arrow { display:block; }
+#treasure-marker.is-offscreen .treasure-waypoint-icon { display:none; }
+#treasure-marker strong, #treasure-marker small { display:block; font-size:12px; }
+#treasure-marker small { margin-top:3px; color:#ffdb83; font-size:14px; font-weight:700; }
+#treasure-hint { position:fixed; bottom:18%; left:50%; transform:translateX(-50%); max-width:calc(100vw - 30px); padding:12px 20px; border:1px solid #e2bd78; border-radius:9px; background:#29251bee; color:#fff; cursor:pointer; z-index:4; }
+#treasure-scan-progress { height:6px; margin-top:18px; overflow:hidden; border-radius:3px; background:#07191e; }
+#treasure-scan-progress > div { width:0; height:100%; background:#9cddd1; transition:width .1s linear; }
+#treasure-scan:disabled { cursor:progress; }
+#treasure-scan[aria-busy='true'] svg { animation:treasure-radar 3s linear infinite; }
+@keyframes treasure-radar { to { transform:rotate(360deg); } }

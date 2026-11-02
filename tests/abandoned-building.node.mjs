@@ -7,12 +7,12 @@ import { purchase } from '../src/base.js';
 test('abandoned building is 300 metres from spawn', () => {
   assert.equal(Math.hypot(abandonedLocation.x, abandonedLocation.z - 2.15), 300);
 });
-test('pass key costs resources only once and unlocks the entrance', () => {
-  const state = { stones: 30, crystals: 10, passKey: 0 };
+test('pass key costs Cors only once and unlocks the entrance', () => {
+  const state = { cors: 60, stones: 30, crystals: 10, passKey: 0 };
   assert.equal(purchase(state, 'passkey'), 'success');
-  assert.deepEqual(state, { stones: 10, crystals: 2, passKey: 1 });
+  assert.deepEqual(state, { cors: 0, stones: 30, crystals: 10, passKey: 1 });
   assert.equal(purchase(state, 'passkey'), 'maximum');
-  assert.equal(state.stones, 10);
+  assert.equal(state.stones, 30);
   const building = createAbandonedBuilding(new THREE.Scene());
   const player = new THREE.Vector3(abandonedLocation.x, abandonedLocation.ground + 1, abandonedLocation.z + 8.1);
   const original = player.clone();

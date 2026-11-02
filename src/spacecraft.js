@@ -4,12 +4,14 @@ import { baseLocation, baseLayout } from './base.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { createSpacecraftCollision } from './spacecraft-collision.js';
 import { createSpacecraftFlight } from './spacecraft-flight.js';
+import { createSpacecraftDamage } from './spacecraft-damage.js';
 
 export const spacecraftLocation = { x: baseLocation.x + 100, z: baseLocation.z - 3.8 * baseLayout.scale };
 
 export function createSpacecraft(scene, terrainHeight) {
   const group = new THREE.Group();
   group.name = 'Kestrel-09';
+  let damaged = false;
   const { x, z } = spacecraftLocation;
   let ground = terrainHeight(x, z);
   for (const dx of [-7, 0, 7]) for (const dz of [-7, 0, 7]) ground = Math.max(ground, terrainHeight(x + dx, z + dz));
@@ -308,13 +310,17 @@ export function createSpacecraft(scene, terrainHeight) {
     canopy.rotation.x = -1.1 * (1 - eased);
   }
   function setBoarded(boarded, immediate = false) {
+    if (damaged && boarded) return;
     canopyTarget = boarded ? 1 : 0;
     if (immediate) canopyClosure = canopyTarget;
     updateCanopy(0);
   }
   updateCanopy(0);
 
+  const landingGears = [];
+  let gearRetraction = 0;
   function landingGear(attachX, footX, pz) {
+    const partsStart = group.children.length;
     const footY = terrainHeight(x + footX, z + pz) - ground + 0.12;
     const jointX = THREE.MathUtils.lerp(attachX, footX, 0.73);
     const upper = [attachX, 2.1, pz], joint = [jointX, 0.85, pz - 0.25], foot = [footX, footY + 0.15, pz];
@@ -325,6 +331,17 @@ export function createSpacecraft(scene, terrainHeight) {
     box(1.15, 0.16, 1.55, footX, footY, pz, dark);
     box(0.82, 0.05, 1.25, footX, footY + 0.1, pz, titanium);
     for (let n = 0; n < 5; n++) box(0.88, 0.025, 0.045, footX, footY + 0.14, pz - 0.5 + n * 0.25, rubber);
+    // Fold the complete strut and foot into the belly around its upper joint.
+    // Keep the mounting cover fixed to the hull.
+    const pivot = new THREE.Group();
+    pivot.name = `landing-gear-${attachX === 0 ? 'nose' : attachX < 0 ? 'left' : 'right'}`;
+    pivot.position.set(attachX, 2.1, pz);
+    for (const part of group.children.slice(partsStart)) {
+      part.position.sub(pivot.position);
+      pivot.add(part);
+    }
+    group.add(pivot);
+    landingGears.push({ pivot, attachX, foldDirection: pz > 0 ? 1 : -1 });
     box(0.58, 0.15, 1.1, attachX, 1.95, pz, armor);
   }
   // Tricycle undercarriage: two rear legs and one central nose leg.
@@ -418,46 +435,136 @@ export function createSpacecraft(scene, terrainHeight) {
   rod([-0.65, 4.6, -4.7], [-0.65, 5.8, -5], 0.018);
   const sensor = mesh(new THREE.SphereGeometry(0.25, 20, 12), dark, 0, 3.43, 7.3); sensor.scale.set(0.8, 0.7, 1);
   ring(0.12, 0.018, 0, 3.44, 7.52, titanium);
+  const weaponMuzzleOffsets = [-1, 1].map(side => new THREE.Vector3(side * 1.65, 3.05, 6.65));
+  const weaponMuzzles = weaponMuzzleOffsets.map(offset => offset.clone().add(group.position));
+  const weaponFlashes = [];
+  const weaponFlashMaterial = new THREE.MeshBasicMaterial({ color: 0x9ceaff, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false });
+  for (const muzzle of weaponMuzzleOffsets) {
+    box(0.46, 0.4, 0.85, muzzle.x, muzzle.y, 4.9, dark);
+    rod([muzzle.x, muzzle.y, 4.9], [muzzle.x, muzzle.y, 6.55], 0.115, titanium);
+    ring(0.14, 0.035, muzzle.x, muzzle.y, 6.5, dark);
+    const flash = mesh(new THREE.SphereGeometry(0.16, 12, 8), weaponFlashMaterial, ...muzzle.toArray());
+    flash.scale.z = 1.7;
+    flash.visible = false;
+    weaponFlashes.push(flash);
+  }
+  let weaponFlashTime = 0;
+  function flashWeapons() {
+    if (damaged) return;
+    weaponFlashTime = 0.07;
+    for (const flash of weaponFlashes) flash.visible = true;
+  }
   // Bake static details into material batches to keep the detailed model inexpensive.
-  const batches = new Map();
-  for (const part of [...group.children]) {
-    if (!part.isMesh || part.material.transparent) continue;
-    if (!batches.has(part.material)) batches.set(part.material, []);
-    batches.get(part.material).push(part);
+  function batchStaticMeshes(root) {
+    const batches = new Map();
+    for (const part of [...root.children]) {
+      if (!part.isMesh || part.material.transparent) continue;
+      if (!batches.has(part.material)) batches.set(part.material, []);
+      batches.get(part.material).push(part);
+    }
+    for (const [material, parts] of batches) {
+      const geometries = parts.map(part => {
+        part.updateMatrix();
+        const geometry = part.geometry.index ? part.geometry.toNonIndexed() : part.geometry.clone();
+        geometry.applyMatrix4(part.matrix); return geometry;
+      });
+      const merged = mergeGeometries(geometries, false);
+      if (!merged) throw new Error('Spacecraft geometry batching failed');
+      const batch = new THREE.Mesh(merged, material); batch.castShadow = batch.receiveShadow = true;
+      root.add(batch);
+      for (const part of parts) { root.remove(part); part.geometry.dispose(); }
+      for (const geometry of geometries) geometry.dispose();
+    }
   }
-  for (const [material, parts] of batches) {
-    const geometries = parts.map(part => {
-      part.updateMatrix();
-      const geometry = part.geometry.index ? part.geometry.toNonIndexed() : part.geometry.clone();
-      geometry.applyMatrix4(part.matrix); return geometry;
-    });
-    const merged = mergeGeometries(geometries, false);
-    if (!merged) throw new Error('Spacecraft geometry batching failed');
-    const batch = new THREE.Mesh(merged, material); batch.castShadow = batch.receiveShadow = true;
-    group.add(batch);
-    for (const part of parts) { group.remove(part); part.geometry.dispose(); }
-    for (const geometry of geometries) geometry.dispose();
+  for (const { pivot } of landingGears) batchStaticMeshes(pivot);
+  batchStaticMeshes(group);
+  const crashDamage = createSpacecraftDamage();
+  group.add(crashDamage.group);
+  const cockpitOffset = new THREE.Vector3(0, 5.75 - cockpitDrop - seatDrop, 1.8);
+  const cockpit = cockpitOffset.clone().add(group.position);
+  const exitOffset = new THREE.Vector3(-3.9, 0, ladderZ);
+  const exit = exitOffset.clone().add(group.position); exit.y = terrainHeight(exit.x, exit.z) + 1;
+  const groundProbe = new THREE.Vector3();
+  const flightRotation = new THREE.Euler(0, 0, 0, 'YXZ');
+  const flightQuaternion = new THREE.Quaternion();
+  function flightGroundHeight(state) {
+    const currentX = x + state.offsetX, currentZ = z + state.offsetZ;
+    flightRotation.set(-state.pitch, state.yaw, state.roll);
+    flightQuaternion.setFromEuler(flightRotation);
+    let currentGround = terrainHeight(currentX, currentZ);
+    for (const dx of [-7, 0, 7]) for (const dz of [-7, 0, 7]) {
+      groundProbe.set(dx, 0, dz).applyQuaternion(flightQuaternion);
+      currentGround = Math.max(currentGround, terrainHeight(currentX + groundProbe.x, currentZ + groundProbe.z) - groundProbe.y);
+    }
+    return currentGround;
   }
-  const cockpit = new THREE.Vector3(0, 5.75 - cockpitDrop - seatDrop, 1.8).add(group.position);
-  const cockpitGroundHeight = cockpit.y;
-  const exit = new THREE.Vector3(x - 3.9, 0, z + ladderZ); exit.y = terrainHeight(exit.x, exit.z) + 1;
-  const flight = createSpacecraftFlight();
-  const resolveGroundContact = createSpacecraftCollision({ x, z }, ground, terrainHeight);
+  const flight = createSpacecraftFlight({ groundHeight: flightGroundHeight });
+  const inverseRotation = new THREE.Quaternion();
+  const terrainProbe = new THREE.Vector3();
+  const localPlayer = new THREE.Vector3(), localPrevious = new THREE.Vector3();
+  function localTerrainHeight(localX, localZ) {
+    terrainProbe.set(localX, 0, localZ).applyQuaternion(group.quaternion).add(group.position);
+    terrainProbe.y = terrainHeight(terrainProbe.x, terrainProbe.z);
+    return terrainProbe.sub(group.position).applyQuaternion(inverseRotation).y;
+  }
+  const resolveGroundContact = createSpacecraftCollision({ x: 0, z: 0 }, 0, localTerrainHeight);
+  function syncFlightTransform() {
+    const currentX = x + flight.state.offsetX, currentZ = z + flight.state.offsetZ;
+    group.rotation.set(damaged ? 0.18 : -flight.state.pitch, flight.state.yaw, damaged ? -0.24 : flight.state.roll, 'YXZ');
+    inverseRotation.copy(group.quaternion).invert();
+    group.position.set(currentX, flight.state.height - (damaged ? 1.8 : 0), currentZ);
+    cockpit.copy(cockpitOffset).applyQuaternion(group.quaternion).add(group.position);
+    for (let i = 0; i < weaponMuzzles.length; i++) weaponMuzzles[i].copy(weaponMuzzleOffsets[i]).applyQuaternion(group.quaternion).add(group.position);
+    exit.copy(exitOffset).applyQuaternion(group.quaternion).add(group.position);
+    exit.y = terrainHeight(exit.x, exit.z) + 1;
+  }
   function update(delta, controls = {}) {
     updateCanopy(delta);
-    flight.update(delta, { ...controls, canopyClosed: canopyClosure === 1 });
-    group.position.y = ground + flight.state.altitude;
-    cockpit.y = cockpitGroundHeight + flight.state.altitude;
+    crashDamage.update(delta);
+    weaponFlashTime = Math.max(0, weaponFlashTime - Math.max(0, delta));
+    for (const flash of weaponFlashes) flash.visible = weaponFlashTime > 0;
+    flight.update(delta, { ...controls, occupied: !damaged && controls.occupied, canopyClosed: !damaged && canopyClosure === 1 });
+    updateLandingGear(delta);
+    syncFlightTransform();
+  }
+  function updateLandingGear(delta) {
+    const { phase, altitude } = flight.state;
+    // Wait for ground clearance before folding; deploy as soon as landing starts.
+    const target = phase === 'hover' || phase === 'flying' || (phase === 'lifting' && altitude > 0.35) ? 1 : 0;
+    const step = Math.max(0, Math.min(delta, 0.1)) / 1.25;
+    gearRetraction += THREE.MathUtils.clamp(target - gearRetraction, -step, step);
+    const eased = THREE.MathUtils.smoothstep(gearRetraction, 0, 1);
+    for (const { pivot, attachX, foldDirection } of landingGears) {
+      pivot.rotation.x = foldDirection * eased * Math.PI / 2;
+      pivot.position.x = attachX * (1 - eased * 0.5);
+      pivot.visible = gearRetraction < 1;
+    }
   }
   function resetFlight() {
-    flight.reset(); group.position.y = ground; cockpit.y = cockpitGroundHeight;
+    flight.reset();
+    weaponFlashTime = 0;
+    for (const flash of weaponFlashes) flash.visible = false;
+    gearRetraction = 0;
+    updateLandingGear(0);
+    syncFlightTransform();
+  }
+  function setDamaged(value) {
+    damaged = value === true;
+    crashDamage.group.visible = damaged;
+    if (damaged) { setBoarded(false, true); resetFlight(); }
+    else syncFlightTransform();
+  }
+  function steer(yawDelta, pitchDelta) {
+    if (canopyClosure === 1) flight.steer(yawDelta, pitchDelta);
   }
   function resolve(player, height, previous) {
-    const altitude = flight.state.altitude;
-    player.y -= altitude;
-    const corrected = resolveGroundContact(player, height, { x: previous.x, y: previous.y - altitude, z: previous.z });
-    player.y += altitude;
-    return corrected === height ? height : corrected + altitude;
+    const previousY = player.y;
+    localPlayer.copy(player).sub(group.position).applyQuaternion(inverseRotation);
+    localPrevious.copy(previous).sub(group.position).applyQuaternion(inverseRotation);
+    resolveGroundContact(localPlayer, height, localPrevious);
+    localPlayer.applyQuaternion(group.quaternion).add(group.position);
+    player.copy(localPlayer);
+    return Math.abs(player.y - previousY) < 0.000001 ? height : Math.max(0, player.y - 1 - terrainHeight(player.x, player.z));
   }
-  return { group, cockpit, exit, canopy, flight: flight.state, isLanded: flight.isLanded, resetFlight, isCanopyOpen: () => canopyClosure === 0, isCanopyClosed: () => canopyClosure === 1, update, setBoarded, resolve, nearEntrance: player => flight.isLanded() && Math.hypot(player.x - exit.x, player.z - exit.z) < 2 && Math.abs(player.y - exit.y) < 2 };
+  return { group, cockpit, exit, canopy, setDamaged, isDamaged: () => damaged, weaponMuzzles, flashWeapons, flight: flight.state, isLanded: flight.isLanded, resetFlight, steer, isCanopyOpen: () => canopyClosure === 0, isCanopyClosed: () => canopyClosure === 1, update, setBoarded, resolve, nearEntrance: player => flight.isLanded() && Math.hypot(player.x - exit.x, player.z - exit.z) < 2 && Math.abs(player.y - exit.y) < 2 };
 }

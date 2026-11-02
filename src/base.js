@@ -15,12 +15,12 @@ export function positionBaseCamera(player, yaw, target) {
 }
 
 export const catalog = [
-  { id: 'passkey', name: 'Pass-Key · Verlassenes Gebäude', english: 'Pass key · Abandoned building', stones: 20, crystals: 8 },
-  { id: 'wormhorn', name: 'Wurmhorn', english: 'Worm horn', stones: 0, crystals: 30 },
-  { id: 'medical', name: 'Medizinpaket · +50 Leben', english: 'Medical kit · +50 health', stones: 5, crystals: 0 },
-  { id: 'laser', name: 'Laser-Upgrade · +35 % Schaden', english: 'Laser upgrade · +35% damage', stones: 10, crystals: 3 },
-  { id: 'jetpack', name: 'Jetpack-Upgrade · +1 m/s Steiggeschwindigkeit', english: 'Jetpack upgrade · +1 m/s climb speed', stones: 15, crystals: 4 },
-  { id: 'scanner', name: 'Scanner-Upgrade · +50 m Reichweite', english: 'Scanner upgrade · +50 m range', stones: 12, crystals: 4 },
+  { id: 'passkey', name: 'Pass-Key · Verlassenes Gebäude', english: 'Pass key · Abandoned building', cors: 60 },
+  { id: 'wormhorn', name: 'Wurmhorn', english: 'Worm horn', cors: 150 },
+  { id: 'medical', name: 'Medizinpaket · +50 Leben', english: 'Medical kit · +50 health', cors: 5 },
+  { id: 'laser', name: 'Laser-Upgrade · +35 % Schaden', english: 'Laser upgrade · +35% damage', cors: 25 },
+  { id: 'jetpack', name: 'Jetpack-Upgrade · +1 m/s Steiggeschwindigkeit', english: 'Jetpack upgrade · +1 m/s climb speed', cors: 35 },
+  { id: 'scanner', name: 'Scanner-Upgrade · +50 m Reichweite', english: 'Scanner upgrade · +50 m range', cors: 32 },
 ];
 export function purchase(state, id) {
   const item = catalog.find(item => item.id === id);
@@ -29,15 +29,38 @@ export function purchase(state, id) {
     || (id === 'jetpack' && state.jetpackLevel >= 2)
     || (id === 'scanner' && state.scannerLevel >= 3)
     || (id === 'passkey' && state.passKey >= 1)) return 'maximum';
-  if (state.stones < item.stones || state.crystals < item.crystals) return 'funds';
-  state.stones -= item.stones;
-  state.crystals -= item.crystals;
+  if ((state.cors || 0) < item.cors) return 'funds';
+  state.cors -= item.cors;
   if (id === 'medical') state.health = Math.min(100, state.health + 50);
   else if (id === 'laser') state.laserLevel = (state.laserLevel || 0) + 1;
   else if (id === 'wormhorn') state.wormHorns = (state.wormHorns || 0) + 1;
   else if (id === 'scanner') state.scannerLevel = (state.scannerLevel || 0) + 1;
   else if (id === 'passkey') state.passKey = 1;
   else state.jetpackLevel = (state.jetpackLevel || 0) + 1;
+  return 'success';
+}
+
+export const resourceMarket = [
+  { id: 'stone', name: 'Stein', english: 'Rock', cors: 1 },
+  { id: 'crystal', name: 'Violetter Kristall', english: 'Purple crystal', cors: 5 },
+  { id: 'blue-crystal', name: 'Blauer Kristall', english: 'Blue crystal', cors: 5 },
+];
+export function resourceAmount(state, id) {
+  if (id === 'stone') return state.stones;
+  if (id === 'crystal') return state.crystals - (state.blueCrystals || 0);
+  if (id === 'blue-crystal') return state.blueCrystals || 0;
+  return 0;
+}
+export function sellResource(state, id, amount = 1) {
+  const item = resourceMarket.find(item => item.id === id);
+  if (!item || !Number.isSafeInteger(amount) || amount <= 0) return 'invalid';
+  if (resourceAmount(state, id) < amount) return 'funds';
+  if (id === 'stone') state.stones -= amount;
+  else {
+    state.crystals -= amount;
+    if (id === 'blue-crystal') state.blueCrystals -= amount;
+  }
+  state.cors = (state.cors || 0) + amount * item.cors;
   return 'success';
 }
 

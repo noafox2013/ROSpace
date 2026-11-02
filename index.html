@@ -16,6 +16,8 @@
         <strong id="compass-heading"></strong>
         <span id="base-compass-marker" title="Planetarische Basis"></span>
         <span id="abandoned-compass-marker" aria-label="Verlassenes Gebäude"></span>
+        <span id="watchtower-compass-marker" aria-label="Weltraum-Wachturm"></span>
+        <span id="treasure-compass-marker" aria-label="Space-Schatztruhe" hidden></span>
       </div>
       <div id="first-person-crosshair" aria-hidden="true" hidden></div>
       <div id="rock-progress" hidden>
@@ -28,6 +30,7 @@
         <div class="brand">
           <span class="brand-mark"></span>
           <span>Rust Mesa</span>
+          <span id="cors-hud">0 Cors</span>
         </div>
         <div class="metrics">
           <div class="health-metric">
@@ -50,7 +53,7 @@
 
       <section class="overlay" id="overlay">
         <h1 id="overlay-title">Rust Mesa</h1>
-        <p id="overlay-copy">Roam across rust-red terrain, dry grass, weathered rocks, low hills, and eroded desert washes.</p>
+        <p id="overlay-copy">Dein Raumschiff ist abgestürzt. Berge den Treibstofftank aus dem verlassenen Gebäude und finde mit dem Wachturm die Landestütze in einer vergrabenen Space-Schatztruhe. Für die Reparatur brauchst du außerdem 30 Kristalle plus 20 blaue Kristalle.</p>
         <button id="start-button" type="button">Start run</button>
         <label id="load-slot-label" for="load-slot" hidden>Spielstand auswählen</label>
         <select id="load-slot" hidden></select>
@@ -84,23 +87,49 @@
       <div id="stand-hint" hidden>F · Aufstehen</div>
       <button id="terminal-hint" type="button" hidden>F · Handelsterminal öffnen</button>
       <div id="abandoned-hint" role="status" hidden></div>
-      <div id="archive-hint" hidden>F · Beschädigten Terminal lesen</div>
+      <div id="archive-hint" hidden>F · Archivterminal aktivieren · 50 Cors</div>
+      <button id="watchtower-hint" type="button" hidden>F · Wachturm-Terminal aktivieren</button>
+      <button id="watchtower-lift-hint" type="button" hidden>F · Space-Aufzug nach oben</button>
+      <div id="treasure-marker" hidden><span class="treasure-waypoint-icon" aria-hidden="true">◇</span><span class="treasure-waypoint-arrow" aria-hidden="true">➤</span><strong>Space-Schatztruhe</strong><small id="treasure-distance"></small></div>
+      <button id="treasure-hint" type="button" hidden>F · Space-Schatztruhe ausgraben</button>
+      <dialog id="watchtower-menu" aria-labelledby="watchtower-title">
+        <div class="tower-terminal-heading"><div><p class="tower-terminal-eyebrow">AEGIS / 04 · DÜNENWACHT</p><h2 id="watchtower-title">Wachturm-Terminal</h2></div><span class="tower-terminal-ready">Terminal bereit</span></div>
+        <p class="tower-terminal-intro">Wähle ein Modul.</p>
+        <button id="treasure-scan" class="tower-scan-card" type="button" aria-pressed="false">
+          <svg viewBox="0 0 64 64" fill="none" aria-hidden="true"><circle cx="32" cy="32" r="23"/><circle cx="32" cy="32" r="13"/><path d="M32 5v54M5 32h54M32 32l17-17"/><circle cx="43" cy="24" r="3" fill="currentColor"/></svg>
+          <span><strong>Trasure Scan</strong><small>Scan-Modul auswählen</small></span><span aria-hidden="true">↗</span>
+        </button>
+        <div id="treasure-scan-progress" role="progressbar" aria-label="Trasure Scan" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden><div></div></div>
+        <p id="watchtower-status" role="status"></p>
+        <button id="watchtower-close" type="button">Schließen</button>
+      </dialog>
       <dialog id="archive-menu" aria-labelledby="archive-title">
         <p class="archive-eyebrow">KEPLER / 07 · NOTFALLARCHIV</p>
         <h2 id="archive-title">Letzter Eintrag</h2>
         <p>Tag 184. Der Sandsturm hat die Solarmodule zerstört. Staub ist in die Kühlung eingedrungen; der Hauptreaktor wurde abgeschaltet.</p>
         <p>Unter der Station registrierten die Sensoren gewaltige Bewegungen. Kurz darauf brach die Kommunikation ab. Die Besatzung evakuierte zur planetarischen Basis.</p>
         <p>Die Luftschleuse wurde versiegelt. Wartungszugang nur mit Pass-Key. Dieser Terminal läuft auf der letzten Notstromreserve.</p>
+        <p>Das versiegelte Wartungsfach enthält noch einen unbeschädigten Treibstofftank. Nach dem Lesen dieses Eintrags kann er für die Reparatur eines Raumschiffs geborgen werden.</p>
         <p class="archive-warning">ARCHIV BESCHÄDIGT · WEITERE DATEN NICHT LESBAR</p>
         <button id="archive-close" type="button">Schließen</button>
       </dialog>
       <dialog id="trade-menu" aria-labelledby="trade-title">
         <h2 id="trade-title">MESA · Handelsterminal</h2>
-        <p>Tausche Rohstoffe gegen Vorräte und dauerhafte Upgrades.</p>
+        <p>Bezahle Vorräte und Upgrades mit Cors. Verdiene Cors, indem du Rohstoffe verkaufst.</p>
         <strong id="trade-balance"></strong>
+        <button id="trade-sell-open" type="button">Verkaufsfenster öffnen</button>
         <div id="trade-products"></div>
         <p id="trade-status" role="status"></p>
         <button id="trade-close" type="button">Schließen</button>
+      </dialog>
+      <dialog id="sell-menu" aria-labelledby="sell-title">
+        <h2 id="sell-title">MESA · Rohstoffe verkaufen</h2>
+        <p>Verkaufe deine Rohstoffe und erhalte Cors.</p>
+        <strong id="sell-balance"></strong>
+        <p>1 Stein = 1 Cor · 1 Kristall = 5 Cors</p>
+        <div id="trade-sales"></div>
+        <p id="sell-status" role="status"></p>
+        <button id="sell-close" type="button">Zurück zum Handel</button>
       </dialog>
       <dialog id="delete-save-dialog" aria-labelledby="delete-save-title">
         <h2 id="delete-save-title">Spielstand löschen?</h2>
@@ -118,6 +147,8 @@
           <button id="inventory-close" type="button" aria-label="Inventar schließen">✕</button>
         </div>
         <p class="inventory-intro">Alles, was du bei deiner Erkundung dabei hast.</p>
+        <p id="inventory-cors" class="inventory-eyebrow">0 Cors</p>
+        <p id="spacecraft-objective" class="spacecraft-objective" role="status"></p>
         <section aria-labelledby="equipment-title">
           <h3 class="inventory-label" id="equipment-title">Ausrüstung <span>3 Gegenstände</span></h3>
           <div class="equipment-grid">
@@ -133,6 +164,14 @@
               <div class="equipment-icon" aria-hidden="true"><svg viewBox="0 0 64 64" fill="none"><path d="M12 48C35 49 48 31 49 9C39 28 28 30 16 30Z" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/><path d="M14 35l12 7M22 29l11 7" stroke="currentColor" stroke-width="2"/></svg></div>
               <div><span class="equipment-badge">Dabei</span><h4>Wurmhorn</h4><p>Am Handelsterminal gekauft.</p><small id="worm-horn-count">0 Stück</small><small>Auswählen und F drücken · Verjagt den Sandwurm</small></div>
             </article>
+            <article id="fuel-tank" class="equipment-card" hidden>
+              <div class="equipment-icon" aria-hidden="true"><svg viewBox="0 0 64 64" fill="none"><rect x="15" y="14" width="34" height="42" rx="6" stroke="currentColor" stroke-width="3"/><path d="M24 14V7h16v7M21 25l22 20M43 25L21 45" stroke="currentColor" stroke-width="3"/></svg></div>
+              <div><span class="equipment-badge">Geborgen</span><h4>Treibstofftank</h4><p>Aus dem verlassenen Gebäude.</p><small>Reparatur: Treibstofftank + Landestütze + 30 Kristalle + 20 blaue Kristalle · F am Raumschiff</small></div>
+            </article>
+            <article id="landing-strut" class="equipment-card" hidden>
+              <div class="equipment-icon" aria-hidden="true"><svg viewBox="0 0 64 64" fill="none"><path d="M24 7h16v10H24zM29 17v21l-12 9v9h30v-9l-12-9V17M12 56h40M21 42l22-14" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/></svg></div>
+              <div><span class="equipment-badge">Geborgen</span><h4>Landestütze</h4><p>Aus der vergrabenen Space-Schatztruhe.</p><small>Wird für die Reparatur des Raumschiffs benötigt.</small></div>
+            </article>
             <article id="sleeping-bag" class="equipment-card" tabindex="0" aria-label="Schlafsack" aria-describedby="sleeping-bag-hint">
               <div class="equipment-icon" aria-hidden="true"><svg viewBox="0 0 64 64" fill="none"><rect x="17" y="5" width="30" height="54" rx="13" stroke="currentColor" stroke-width="3"/><path d="M18 24h28M18 36h28M19 48h26M36 25v28" stroke="currentColor" stroke-width="2"/><ellipse cx="32" cy="15" rx="8" ry="5" stroke="currentColor" stroke-width="2"/></svg></div>
               <div><span class="equipment-badge">Dabei</span><h4>Schlafsack</h4><p>Schlafe durch die Nacht bis zum nächsten Morgen.</p><small id="sleeping-bag-hint">Auswählen und F drücken · Nur nachts</small></div>
@@ -144,6 +183,7 @@
           <div class="inventory-grid">
             <article class="inventory-slot empty" id="inventory-stone" aria-live="polite"></article>
             <article class="inventory-slot empty" id="inventory-crystal" aria-live="polite"></article>
+            <article class="inventory-slot empty" id="inventory-blue-crystal" aria-live="polite"></article>
           </div>
         </section>
         <p id="sleep-status" role="status"></p>

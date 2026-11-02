@@ -40,7 +40,7 @@ test('ruin has compass marker, locked entry and a purchasable saved pass key', a
         updateTerrainAroundPlayer();
       };
       window.testPassKey = () => {
-        state.stones = 30; state.crystals = 10;
+        state.cors = 110; state.stones = 30; state.crystals = 10;
         refreshTradingTerminal(); tradeMenu.showModal();
       };
       window.savePassKey = () => { tradeMenu.close(); saveGame(); return readSaves(localStorage)[activeSaveSlot].state.passKey; };

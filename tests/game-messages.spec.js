@@ -17,6 +17,7 @@ test('pause menu keeps past game messages beside the settings and clears them fo
   await page.keyboard.press('Escape');
   const messages = page.locator('#game-message-list');
   await expect(messages.locator('li')).toHaveCount(1);
+  await expect(messages.locator('li').first()).toHaveCSS('color', 'rgb(212, 20, 36)');
   await expect(messages).toContainText('DER FLUCH DES SANDWURMS');
   const settings = await page.locator('.pause-settings').boundingBox();
   const panel = await page.locator('.game-messages').boundingBox();

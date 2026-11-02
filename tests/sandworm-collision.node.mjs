@@ -350,3 +350,55 @@ test('the horn requires an awakened worm that has not been repelled', () => {
   worm.repel(true);
   assert.equal(worm.isPresent(), false);
 });
+
+test('sheltered explorers cannot be bitten or pushed by the worm, while exposed collisions still work', () => {
+  for (const contact of ['mouth', 'body']) {
+    const worm = airborneWorm();
+    let player;
+    if (contact === 'mouth') player = worm.object.position.clone();
+    else {
+      const matrix = new THREE.Matrix4();
+      worm.object.children[0].getMatrixAt(30, matrix);
+      player = new THREE.Vector3().setFromMatrixPosition(matrix).add(worm.object.position);
+    }
+    const before = player.clone();
+    assert.equal(worm.update(0, player, 0, true), null);
+    assert(player.equals(before));
+    assert.equal(worm.update(0, player, 0, false), contact);
+  }
+});
+
+test('the entire worm stays clear of building walls, roofs and floors over repeated leaps', () => {
+  const building = new THREE.Box3(new THREE.Vector3(-10,-0.5,-10),new THREE.Vector3(10,12,10));
+  const worm = createSandworm(() => 0, () => {}, [building]);
+  const player = new THREE.Vector3(0,1,0);
+  worm.reset(player,0);
+  const matrix = new THREE.Matrix4(), world = new THREE.Matrix4(), bounds = new THREE.Box3();
+  for (let frame = 0; frame < 240; frame++) {
+    worm.update(0.1,player,0,true);
+    if (frame % 4) continue;
+    worm.object.updateMatrixWorld(true);
+    for (const object of worm.getLaserTargets()) {
+      if (object.isInstancedMesh) {
+        object.geometry.computeBoundingBox();
+        for (let instance = 0; instance < object.count; instance++) {
+          object.getMatrixAt(instance,matrix); world.multiplyMatrices(object.matrixWorld,matrix);
+          bounds.copy(object.geometry.boundingBox).applyMatrix4(world);
+          assert.equal(bounds.intersectsBox(building),false, `${object.type} instance ${instance} at frame ${frame}`);
+        }
+      } else {
+        bounds.setFromObject(object);
+        assert.equal(bounds.intersectsBox(building),false, `${object.name} at frame ${frame}`);
+      }
+    }
+  }
+});
+
+test('the worm still emerges outside protected buildings', () => {
+  const building = new THREE.Box3(new THREE.Vector3(-10,-0.5,-10),new THREE.Vector3(10,12,10));
+  const worm = createSandworm(() => 0, () => {}, [building]);
+  const player = new THREE.Vector3(90,1,0);
+  worm.reset(player,0);
+  worm.update(3,player,0);
+  assert(worm.object.position.y > 30);
+});

@@ -1,3 +1,8 @@
+export function isCurseMessage(text) {
+  return text === 'DER FLUCH DES SANDWURMS HAT SICH ÜBER DICH GELEGT, DU WIRST NIE GUT ERWACHEN'
+    || text === 'THE CURSE OF THE SANDWORM HAS FALLEN UPON YOU, YOU WILL NEVER WAKE WELL';
+}
+
 export function createCurseMessage(element) {
   let shown = false;
   let timeout;
@@ -24,6 +29,7 @@ export function createCurseMessage(element) {
     show(text, { keepHistory = true } = {}) {
       hide();
       element.textContent = text;
+      element.classList?.toggle('is-curse', isCurseMessage(text));
       if (keepHistory && !history.includes(text)) history.push(text);
       element.hidden = false;
       timeout = setTimeout(hide, 15000);
@@ -38,6 +44,7 @@ export function createCurseMessage(element) {
       if (shown) return false;
       hide();
       if (typeof text === 'string') element.textContent = text;
+      element.classList?.toggle('is-curse', isCurseMessage(element.textContent));
       remember();
       element.hidden = false;
       timeout = setTimeout(hide, 15000);

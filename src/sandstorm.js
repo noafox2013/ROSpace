@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { createTornadoVisual } from './tornado-visual.js';
 
 export function createStormWeather(random = Math.random, onWarning = () => {}, onEnd = () => {}) {
   let wait = 45 + random() * 45, age = 0, duration = 0, warned = false;
@@ -72,6 +73,33 @@ export function createSandstorm(scene, onWarning, onEnd, groundHeight = () => 0)
     curtains.add(sprite);
   }
   curtains.visible = false; scene.add(curtains);
+  const tornadoes = Array.from({ length: 3 }, (_, index) => {
+    const tornado = createTornadoVisual(index);
+    scene.add(tornado.group);
+    return tornado;
+  });
+  function updateTornadoes(delta, player) {
+    for (let index = 0; index < tornadoes.length; index++) {
+      const tornado = tornadoes[index], group = tornado.group;
+      group.visible = intensity > 0.15;
+      if (!group.visible) { tornado.placed = false; continue; }
+      if (!tornado.placed || Math.hypot(group.position.x - player.x, group.position.z - player.z) > 85) {
+        if (delta <= 0) continue;
+        const angle = time * 0.3 + index * Math.PI * 2 / 3;
+        const distance = 18 + index * 14;
+        group.position.set(player.x + Math.cos(angle) * distance, 0, player.z + Math.sin(angle) * distance);
+        tornado.heading = angle + Math.PI;
+        tornado.placed = true;
+      }
+      // Funnels drift with the wind and slowly meander across the terrain.
+      tornado.heading += Math.sin(time * 0.23 + index * 2.1) * delta * 0.15;
+      group.position.x += Math.cos(tornado.heading) * delta * 3.8;
+      group.position.z += Math.sin(tornado.heading) * delta * 3.8;
+      group.position.y = groundHeight(group.position.x, group.position.z);
+      const visibility = 1 - THREE.MathUtils.smoothstep(group.position.distanceTo(player), 35, 90);
+      tornado.update(time, intensity * visibility);
+    }
+  }
   const previousPlayer = new THREE.Vector3();
   let hasPreviousPlayer = false;
   const overlay = document.createElement('div');
@@ -83,6 +111,7 @@ export function createSandstorm(scene, onWarning, onEnd, groundHeight = () => 0)
     ...weather,
     update(delta, player, indoors) {
       intensity = weather.update(delta); time += delta;
+      updateTornadoes(delta, player);
       const exposure = intensity * (indoors ? 0.08 : 1);
       gust = 0.85 + Math.sin(time * 1.7) * 0.1 + Math.sin(time * 4.1) * 0.05;
       const moveX = hasPreviousPlayer ? player.x - previousPlayer.x : 0;
@@ -128,9 +157,18 @@ export function createSandstorm(scene, onWarning, onEnd, groundHeight = () => 0)
       scene.fog.color.lerp(sandColor, Math.min(1, exposure));
       material.color.copy(scene.fog.color).lerp(sandTint, 0.25);
       curtainMaterial.color.copy(scene.fog.color);
+      for (const tornado of tornadoes) tornado.setAtmosphere(scene.fog.color);
       scene.fog.near = THREE.MathUtils.lerp(300, 1.5, Math.min(1, exposure));
       scene.fog.far = THREE.MathUtils.lerp(1100, 18, Math.min(1, exposure ** 0.2));
     },
+    reset() {
+      weather.reset(); intensity = time = 0; hasPreviousPlayer = false;
+      overlay.style.opacity = '0'; grains.visible = curtains.visible = false;
+      for (const tornado of tornadoes) { tornado.placed = false; tornado.group.visible = false; }
+    },
+    getTornadoes: () => intensity > 0.45 ? tornadoes.filter(t => t.placed).map(t => ({
+      x: t.group.position.x, z: t.group.position.z, radius: t.radius, height: t.height,
+    })) : [],
     getIntensity: () => intensity,
     getGust: () => gust,
   };

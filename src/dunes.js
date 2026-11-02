@@ -62,3 +62,18 @@ export function duneHeight(x, z) {
   }
   return height;
 }
+
+export function nearestDuneCrest(x, z) {
+  let nearest = null, distance = Infinity;
+  const centerX = Math.round(x / cellSize), centerZ = Math.round(z / cellSize);
+  for (let iz = centerZ - 3; iz <= centerZ + 3; iz++) for (let ix = centerX - 3; ix <= centerX + 3; ix++) {
+    const dune = duneInCell(ix, iz);
+    if (!dune) continue;
+    const crest = Math.sin(dune.phase) * 7;
+    const px = dune.x + dune.cos * crest, pz = dune.z + dune.sin * crest;
+    const d = Math.hypot(px - x, pz - z);
+    if (d < distance) { distance = d; nearest = { x: px, z: pz, height: dune.height }; }
+  }
+  if (!nearest) throw new Error('No dune crest found for the watchtower');
+  return nearest;
+}

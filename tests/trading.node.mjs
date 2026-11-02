@@ -1,14 +1,42 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { purchase, positionBaseCamera, baseLocation, baseLayout } from '../src/base.js';
-const fresh = () => ({ stones: 50, crystals: 20, health: 40, laserLevel: 0, jetpackLevel: 0 });
+import { purchase, sellResource, positionBaseCamera, baseLocation, baseLayout } from '../src/base.js';
+const fresh = () => ({ cors: 150, stones: 50, crystals: 20, health: 40, laserLevel: 0, jetpackLevel: 0 });
+test('purchases use Cors and preserve every resource count', () => {
+  const state = { ...fresh(), crystals: 7, blueCrystals: 5 };
+  assert.equal(purchase(state, 'laser'), 'success');
+  assert.equal(purchase(state, 'scanner'), 'success');
+  assert.equal(state.cors, 93);
+  assert.equal(state.stones, 50); assert.equal(state.crystals, 7); assert.equal(state.blueCrystals, 5);
+});
+test('selling crystals distinguishes purple and blue, and selling stones pays Cors', () => {
+  const state = { ...fresh(), cors: 0, stones: 2, crystals: 7, blueCrystals: 5 };
+  assert.equal(sellResource(state, 'stone', 2), 'success');
+  assert.equal(sellResource(state, 'crystal', 2), 'success');
+  assert.equal(state.crystals, 5); assert.equal(state.blueCrystals, 5);
+  assert.equal(sellResource(state, 'crystal'), 'funds');
+  assert.equal(sellResource(state, 'blue-crystal', 5), 'success');
+  assert.equal(state.cors, 37); assert.equal(state.crystals, 0); assert.equal(state.blueCrystals, 0);
+  const before = { ...state };
+  for (const amount of [0, -1, 1.5, NaN]) assert.equal(sellResource(state, 'stone', amount), 'invalid');
+  assert.equal(sellResource(state, 'stone'), 'funds');
+  assert.equal(sellResource(state, 'unknown'), 'invalid');
+  assert.deepEqual(state, before);
+});
+test('legacy saves without Cors must sell resources before buying', () => {
+  const state = { stones: 5, crystals: 0, health: 40 };
+  assert.equal(purchase(state, 'medical'), 'funds');
+  assert.equal(sellResource(state, 'stone', 5), 'success');
+  assert.equal(purchase(state, 'medical'), 'success');
+  assert.equal(state.cors, 0); assert.equal(state.health, 90);
+});
 test('purchases charge exactly once and apply health and permanent upgrades', () => {
   const state = fresh();
   for (const id of ['medical', 'laser', 'jetpack']) assert.equal(purchase(state, id), 'success');
-  assert.deepEqual(state, { stones: 20, crystals: 13, health: 90, laserLevel: 1, jetpackLevel: 1 });
+  assert.deepEqual(state, { cors: 85, stones: 50, crystals: 20, health: 90, laserLevel: 1, jetpackLevel: 1 });
 });
 test('insufficient resources and capped upgrades do not spend resources', () => {
-  const state = { ...fresh(), stones: 0 };
+  const state = { ...fresh(), cors: 0 };
   const before = { ...state };
   assert.equal(purchase(state, 'laser'), 'funds'); assert.deepEqual(state, before);
   state.health = 100; state.laserLevel = 3; state.jetpackLevel = 2;
@@ -56,14 +84,14 @@ test('third-person camera stays inside the base at doors, corners and all headin
   }
 });
 
-test('worm horns cost 30 crystals each and cannot be bought without funds', () => {
-  const state = { ...fresh(), stones: 0, crystals: 60, wormHorns: 0 };
+test('worm horns cost 150 Cors each and cannot be bought without funds', () => {
+  const state = { ...fresh(), cors: 300, stones: 0, crystals: 60, wormHorns: 0 };
   assert.equal(purchase(state, 'wormhorn'), 'success');
-  assert.equal(state.crystals, 30);
+  assert.equal(state.cors, 150);
   assert.equal(state.wormHorns, 1);
   assert.equal(state.jetpackLevel, 0);
   assert.equal(purchase(state, 'wormhorn'), 'success');
-  assert.equal(state.crystals, 0);
+  assert.equal(state.cors, 0);
   assert.equal(state.wormHorns, 2);
   assert.equal(purchase(state, 'wormhorn'), 'funds');
   assert.equal(state.wormHorns, 2);
@@ -71,13 +99,14 @@ test('worm horns cost 30 crystals each and cannot be bought without funds', () =
 });
 
 test('scanner upgrades charge resources, cap at three, and leave jetpack unchanged', () => {
-  const state = { stones: 50, crystals: 20, scannerLevel: 0, jetpackLevel: 0 };
+  const state = { cors: 96, stones: 50, crystals: 20, scannerLevel: 0, jetpackLevel: 0 };
   for (let level = 1; level <= 3; level++) {
     assert.equal(purchase(state, 'scanner'), 'success');
     assert.equal(state.scannerLevel, level);
   }
-  assert.equal(state.stones, 14);
-  assert.equal(state.crystals, 8);
+  assert.equal(state.cors, 0);
+  assert.equal(state.stones, 50);
+  assert.equal(state.crystals, 20);
   assert.equal(state.jetpackLevel, 0);
   const before = { ...state };
   assert.equal(purchase(state, 'scanner'), 'maximum');
