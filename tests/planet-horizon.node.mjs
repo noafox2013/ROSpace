@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { planetSurfaceDistance, cameraDrawDistance, planetViewHeight, PLANET_RADIUS, TERRAIN_FADE_END } from '../src/planet-horizon.js';
+import { planetSurfaceDistance, cameraDrawDistance, planetViewHeight, PLANET_RADIUS, TERRAIN_FADE_END, TERRAIN_TILE_SIZE } from '../src/planet-horizon.js';
 
 test('the ground remains beneath the camera at every flight altitude', () => {
   for (const height of [1,100,500,1500,5000,50000,1000000]) {
@@ -19,8 +19,8 @@ test('a curved horizon separates ground and sky and lowers naturally with altitu
   }
 });
 test('the detail fade finishes before the nearest edge of the moving terrain grid', () => {
-  // Seven 160 m tiles, with up to half a tile of rounding from the player.
-  assert(TERRAIN_FADE_END < 7*160/2-160/2);
+  // Seven terrain tiles, with up to half a tile of rounding from the player.
+  assert(TERRAIN_FADE_END < 3*TERRAIN_TILE_SIZE);
 });
 test('standing on a dune raises the horizon viewpoint above the distant plain',()=>{
   assert.equal(planetViewHeight(35,30),36.05);

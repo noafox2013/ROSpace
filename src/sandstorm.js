@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { CLEAR_FOG_NEAR, CLEAR_FOG_FAR } from './planet-horizon.js';
 import { createTornadoVisual } from './tornado-visual.js';
 
 export function createStormWeather(random = Math.random, onWarning = () => {}, onEnd = () => {}) {
@@ -158,8 +159,8 @@ export function createSandstorm(scene, onWarning, onEnd, groundHeight = () => 0)
       material.color.copy(scene.fog.color).lerp(sandTint, 0.25);
       curtainMaterial.color.copy(scene.fog.color);
       for (const tornado of tornadoes) tornado.setAtmosphere(scene.fog.color);
-      scene.fog.near = THREE.MathUtils.lerp(300, 1.5, Math.min(1, exposure));
-      scene.fog.far = THREE.MathUtils.lerp(1100, 18, Math.min(1, exposure ** 0.2));
+      scene.fog.near = THREE.MathUtils.lerp(CLEAR_FOG_NEAR, 1.5, Math.min(1, exposure));
+      scene.fog.far = THREE.MathUtils.lerp(CLEAR_FOG_FAR, 18, Math.min(1, exposure ** 0.2));
     },
     reset() {
       weather.reset(); intensity = time = 0; hasPreviousPlayer = false;

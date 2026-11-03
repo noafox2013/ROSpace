@@ -513,6 +513,7 @@ export function createSandworm(terrainHeight, onDefeat = () => {}, buildings = [
   const forward = new THREE.Vector3(0, 0, 1);
   const previousPlayer = new THREE.Vector3();
   const velocity = new THREE.Vector3();
+  const measuredVelocity = new THREE.Vector3();
 
   // Aim for the descending ground crossing, when the mouth can reach the explorer.
   const strikeProgress = (1 + Math.sqrt(1 - 25 / 64)) / 2;
@@ -533,9 +534,12 @@ export function createSandworm(terrainHeight, onDefeat = () => {}, buildings = [
   }
 
   function sampleLeap(seconds, target) {
-    const progress = THREE.MathUtils.clamp(seconds / leapDuration, 0, 1);
+    // Continue the route underground before entry and after exit. Clamping
+    // time stacks the delayed tail segments and gives them a zero tangent.
+    const progress = seconds / leapDuration;
     target.lerpVectors(launch, landing, progress);
-    const lateral = Math.sin(progress * Math.PI) * Math.sin(progress * Math.PI * 2) * 0.45;
+    const arcProgress = THREE.MathUtils.clamp(progress, 0, 1);
+    const lateral = Math.sin(arcProgress * Math.PI) * Math.sin(arcProgress * Math.PI * 2) * 0.45;
     const length = Math.hypot(landing.x - launch.x, landing.z - launch.z) || 1;
     target.x += (landing.z - launch.z) / length * lateral;
     target.z -= (landing.x - launch.x) / length * lateral;
@@ -551,7 +555,10 @@ export function createSandworm(terrainHeight, onDefeat = () => {}, buildings = [
       const influence = THREE.MathUtils.smoothstep(distance, size * 6, size * 6 + 22);
       const ground = Math.min(terrain, bounds.min.y);
       const ceiling = THREE.MathUtils.lerp(ground - size * 7, ground + 40, influence);
-      target.y = Math.min(target.y, ceiling);
+      // A smooth minimum keeps the whole worm below the clearance ceiling
+      // without an abrupt change of slope at the building's approach.
+      const difference = target.y - ceiling;
+      target.y = (target.y + ceiling - Math.sqrt(difference * difference + 1.44)) * 0.5;
     }
     if (repelled) target.y -= THREE.MathUtils.smoothstep(retreatTime, 0, 3) * 110;
     return target;
@@ -591,7 +598,7 @@ export function createSandworm(terrainHeight, onDefeat = () => {}, buildings = [
     sampleLeap(cycleTime, worm.position);
     for (let i = 0; i < segmentCount; i += 1) {
       const fraction = i / (segmentCount - 1);
-      const contraction = 1 + Math.sin(time * 2.1 - fraction * 8) * 0.035;
+      const contraction = 1 + Math.sin(time * 1.6 - fraction * 8) * 0.018;
       const radius = size * 2.7 * (1 - Math.pow(fraction, 2) * 0.88) * contraction;
       const seconds = cycleTime - (i + 2) * segmentDelay;
       sampleLeap(seconds, dummy.position).sub(worm.position);
@@ -680,8 +687,9 @@ export function createSandworm(terrainHeight, onDefeat = () => {}, buildings = [
     }
     sand.visible = true;
     if (delta > 0) {
-      velocity.set((player.x - previousPlayer.x) / delta, 0, (player.z - previousPlayer.z) / delta);
-      velocity.clampLength(0, 8);
+      measuredVelocity.set((player.x - previousPlayer.x) / delta, 0, (player.z - previousPlayer.z) / delta);
+      measuredVelocity.clampLength(0, 8);
+      velocity.lerp(measuredVelocity, 1 - Math.exp(-8 * delta));
     }
     previousPlayer.copy(player);
     cycleTime += delta;

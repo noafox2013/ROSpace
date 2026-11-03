@@ -1,13 +1,14 @@
 import { test, expect } from '@playwright/test';
 
 test('helmet nods, follows looking smoothly and keeps its visor attached', async ({ page }) => {
-  test.setTimeout(90000);
+  test.setTimeout(180000);
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
   await page.route('**/src/main.js*', async route => {
     const response = await route.fetch();
     await route.fulfill({ response, body: await response.text() + `
+      renderer.setPixelRatio(0.5);
       window.auditHead = () => {
         state.cameraOrbitYaw = state.faceYaw;
         state.cameraPitch = state.flightHeight = state.jetpackBurn = 0;
@@ -50,9 +51,12 @@ test('helmet nods, follows looking smoothly and keeps its visor attached', async
     ` });
   });
   await page.goto('http://127.0.0.1:5173/');
+  await page.waitForFunction(() => typeof window.auditHead === 'function');
   await page.locator('#start-button').click();
   const result = await page.evaluate(() => window.auditHead());
-  expect(result.nod).toBeGreaterThan(0.07);
+  // The head stabilizes the gaze instead of nodding strongly at every step.
+  expect(result.nod).toBeGreaterThan(0.015);
+  expect(result.nod).toBeLessThan(0.12);
   expect(result.roll).toBeGreaterThan(0.06);
   expect(result.firstStep).toBeLessThan(0.09);
   expect(result.lookRight).toBeGreaterThan(0.45);

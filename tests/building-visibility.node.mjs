@@ -1,0 +1,27 @@
+import assert from 'node:assert/strict';
+import * as THREE from 'three';
+import { createBuildingVisibility } from '../src/building-visibility.js';
+import { TERRAIN_FADE_END as range } from '../src/planet-horizon.js';
+
+const base = new THREE.Group();
+base.add(new THREE.Mesh(new THREE.BoxGeometry(20, 10, 20)));
+const tower = new THREE.Group();
+tower.position.set(range * 3, 0, 0);
+tower.add(new THREE.Mesh(new THREE.BoxGeometry(10, 40, 10)));
+const update = createBuildingVisibility([base, tower]);
+const camera = new THREE.Vector3();
+update(camera);
+assert.equal(base.visible, true);
+assert.equal(tower.visible, false);
+update(camera.set(range + 11, 0, 0));
+assert.equal(base.visible, false);
+update(camera.set(range, 0, 0));
+assert.equal(base.visible, false, 'the visibility margin prevents flickering');
+update(camera.set(range - 11, 0, 0));
+assert.equal(base.visible, true, 'a returning player sees the building again');
+update(camera.set(range * 3, 18, 0));
+assert.equal(base.visible, false);
+assert.equal(tower.visible, true, 'the camera inside the tower still sees it');
+update(camera.set(range * 3, range + 21, 0));
+assert.equal(tower.visible, false, 'distance also works above the buildings');
+console.log('Buildings disappear at a distance and reappear nearby without boundary flicker.');

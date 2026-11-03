@@ -1,8 +1,11 @@
 import * as THREE from 'three';
 
 export const PLANET_RADIUS = 50000;
-export const TERRAIN_FADE_START = 300;
-export const TERRAIN_FADE_END = 440;
+export const TERRAIN_FADE_START = 600;
+export const TERRAIN_FADE_END = 880;
+export const TERRAIN_TILE_SIZE = 320;
+export const CLEAR_FOG_NEAR = 600;
+export const CLEAR_FOG_FAR = 2200;
 const PLANET_GROUND_LEVEL = -1.05;
 
 export function planetViewHeight(worldY,localGround) {
@@ -11,7 +14,7 @@ export function planetViewHeight(worldY,localGround) {
 }
 
 export function cameraDrawDistance(altitude) {
-  return Math.max(1600, Math.max(0,altitude)+1400);
+  return Math.max(2600, Math.max(0,altitude)+2400);
 }
 
 // Stable near root of a ray/sphere intersection, including very high flight.
@@ -28,7 +31,7 @@ export function installPlanetHorizon(skyDome, terrainHeight) {
   uniforms.planetHeight={value:1};
   uniforms.planetWorldXZ={value:new THREE.Vector2()};
   uniforms.planetFogColor={value:new THREE.Color()};
-  uniforms.planetFogRange={value:new THREE.Vector2(300,1100)};
+  uniforms.planetFogRange={value:new THREE.Vector2(CLEAR_FOG_NEAR,CLEAR_FOG_FAR)};
   skyDome.material.fragmentShader=skyDome.material.fragmentShader.replace('      void main() {', /* glsl */ `
       uniform float planetHeight;
       uniform vec2 planetWorldXZ;

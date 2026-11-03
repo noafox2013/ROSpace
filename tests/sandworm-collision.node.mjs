@@ -402,3 +402,26 @@ test('the worm still emerges outside protected buildings', () => {
   worm.update(3,player,0);
   assert(worm.object.position.y > 30);
 });
+
+test('delayed body segments keep following the route before emergence and after diving', () => {
+  const worm = createSandworm(() => 0);
+  const player = new THREE.Vector3(0, 1, 0);
+  worm.reset(player, 0);
+  const body = worm.object.children[0];
+  const previous = new THREE.Vector3();
+  const current = new THREE.Vector3();
+  const matrix = new THREE.Matrix4();
+  let elapsed = 0;
+  for (const seconds of [0, 0.3, 3, 6.4, 9]) {
+    worm.update(seconds - elapsed, player, 0, true);
+    elapsed = seconds;
+    for (let index = 0; index < body.count; index++) {
+      body.getMatrixAt(index, matrix);
+      assert.ok(matrix.elements.every(Number.isFinite));
+      current.setFromMatrixPosition(matrix);
+      if (index > 0) assert.ok(current.distanceTo(previous) > 0.1,
+        `segments ${index - 1} and ${index} collapse at ${seconds}s`);
+      previous.copy(current);
+    }
+  }
+});

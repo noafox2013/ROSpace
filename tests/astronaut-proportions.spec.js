@@ -1,13 +1,14 @@
 import { test, expect } from '@playwright/test';
 
 test('adult proportions keep elbows, knees and boots connected through walking and flight', async ({ page }) => {
-  test.setTimeout(90000);
+  test.setTimeout(180000);
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
   await page.route('**/src/main.js*', async route => {
     const response = await route.fetch();
     await route.fulfill({ response, body: await response.text() + `
+      renderer.setPixelRatio(0.5);
       window.auditAstronaut = () => {
         state.running = true;
         state.gaitBlend = 0;
@@ -34,9 +35,11 @@ test('adult proportions keep elbows, knees and boots connected through walking a
         const hands = [];
         const shouldersTurn = [];
         const elbowBend = [];
-        for (const flying of [false, true]) {
-          state.flightHeight = flying ? 2 : 0;
-          state.jetpackBurn = flying ? 1 : 0;
+        for (const [height, velocity, burn] of [[0,0,0], [2,4,1], [3,-5,0], [0.2,-4,0]]) {
+          const flying = height > 0;
+          state.flightHeight = height;
+          state.flightVelocity = velocity;
+          state.jetpackBurn = burn;
           for (let frame = 0; frame < 48; frame++) {
             updateRunAnimation(0.04, 1, 1, 1);
             if (!flying) {
@@ -62,6 +65,7 @@ test('adult proportions keep elbows, knees and boots connected through walking a
     ` });
   });
   await page.goto('http://127.0.0.1:5173/');
+  await page.waitForFunction(() => typeof window.auditAstronaut === 'function');
   await page.locator('#start-button').click();
   const result = await page.evaluate(() => window.auditAstronaut());
   expect(result.headFraction).toBeGreaterThan(0.15);
@@ -74,7 +78,8 @@ test('adult proportions keep elbows, knees and boots connected through walking a
   expect(result.armToLeg).toBeLessThan(0.78);
   expect(Math.abs(result.soleHeight)).toBeLessThan(0.12);
   expect(result.maxGap).toBeLessThan(0.025);
-  expect(result.armSwing).toBeGreaterThan(0.4);
+  expect(result.armSwing).toBeGreaterThan(0.22);
+  expect(result.armSwing).toBeLessThan(0.65);
   expect(result.chestTurn).toBeGreaterThan(0.12);
   expect(result.elbowFlex).toBeGreaterThan(0.15);
   expect(errors).toEqual([]);

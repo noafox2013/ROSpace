@@ -1,5 +1,6 @@
 import './styles.css';
 import { duneHeight } from './dunes.js';
+import { createBuildingVisibility } from './building-visibility.js';
 import { createSandstorm } from './sandstorm.js';
 import { createTornadoFlight } from './sand-tornado.js';
 import { damageHealth, updateHealthRecovery, applyFallDamage, HEALTH_RECOVERY_DELAY } from './player-health.js';
@@ -34,8 +35,8 @@ import { createSandworm } from './sandworm.js';
 import { createCurseMessage, isCurseMessage } from './curse-message.js';
 import { createNaturalStoneGeometry, createNaturalStoneMaterial, stoneSupportHeight } from './natural-stone.js';
 import { createTerrainSurfaceMaterial } from './terrain-surface.js';
-import { installPlanetHorizon, cameraDrawDistance } from './planet-horizon.js';
-import { astronautAnatomy, sampleAstronautStep, smoothMinimum, solveLimbJoint, alignLimb, poseAstronautArms } from './astronaut-rig.js';
+import { installPlanetHorizon, cameraDrawDistance, TERRAIN_TILE_SIZE, CLEAR_FOG_NEAR, CLEAR_FOG_FAR } from './planet-horizon.js';
+import { astronautAnatomy, sampleAstronautStep, sampleAstronautFlight, smoothMinimum, solveLimbJoint, alignLimb, poseAstronautArms, poseAstronautHand } from './astronaut-rig.js';
 import { createEquipmentMaterials, createAstronautBoot, createChestConsole, createLifeSupportPack } from './astronaut-equipment.js';
 import { createSuitFabric, createClothCapsule, createPaddedPanel, addFabricSeam } from './suit-fabric.js';
 
@@ -125,6 +126,7 @@ let pendingDeleteSlot = null;
 let activeSaveSlot = 0;
 let currentRunHasSave = false;
 let restartAfterDeath = false;
+let deathRespawn = null;
 let seatedBench = null;
 let isSleeping = false;
 let sleepTimer = null;
@@ -454,7 +456,7 @@ renderer.toneMappingExposure = 0.95;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0xa7bfca);
-scene.fog = new THREE.Fog(0xb7a89f, 300, 1100);
+scene.fog = new THREE.Fog(0xb7a89f, CLEAR_FOG_NEAR, CLEAR_FOG_FAR);
 const desertEnvironment = createDesertEnvironment(renderer);
 scene.environment = desertEnvironment.texture;
 scene.environmentIntensity = 0.65;
@@ -590,17 +592,23 @@ const skyDome = new THREE.Mesh(
         sky = mix(groundGlow, sky, smoothstep(-0.18, 0.18, h));
         float sunAlignment = clamp(dot(direction, sunDirection), -1.0, 1.0);
         float sunAngle = acos(sunAlignment);
-        float dawnGlow = exp(-sunAngle * sunAngle / 0.24)
-          * exp(-abs(h) * 6.0) * dawnStrength;
-        // Keep sunrise/sunset colors on the sun's side of the horizon.
+        // Atmospheric paths grow toward the horizon; warmth spreads in azimuth
+        // while the zenith stays blue and the opposite horizon turns mauve.
         vec2 horizonSun = sunDirection.xz / max(length(sunDirection.xz), 0.0001);
         vec2 horizonView = direction.xz / max(length(direction.xz), 0.0001);
-        float sunSide = pow(max(dot(horizonSun, horizonView), 0.0), 4.0);
-        float horizonWarmth = sunSide * exp(-abs(h) * 6.0) * dawnStrength;
-        sky = mix(sky, vec3(0.82, 0.29, 0.1), horizonWarmth * 0.55);
-        sky += vec3(0.95, 0.23, 0.055) * dawnGlow * 0.65;
+        float azimuth = dot(horizonSun, horizonView);
+        float sunSide = pow(max(azimuth * 0.5 + 0.5, 0.0), 3.0);
+        float horizonBand = exp(-pow((h - 0.025) / 0.14, 2.0));
+        float sunsetHaze = horizonBand * sunSide * dawnStrength * (1.0 - stormStrength);
+        sky = mix(sky, vec3(0.68, 0.24, 0.085), sunsetHaze * 0.64);
+        float dawnGlow = exp(-sunAngle * sunAngle / 0.13)
+          * exp(-abs(h) * 9.0) * dawnStrength * (1.0 - stormStrength);
+        sky += vec3(0.34, 0.115, 0.028) * dawnGlow;
+        float opposite = pow(max(-azimuth, 0.0), 2.0) * dawnStrength;
+        float twilightBelt = exp(-pow((h - 0.10) / 0.065, 2.0));
+        sky = mix(sky, vec3(0.24, 0.15, 0.23), opposite * twilightBelt * 0.3);
         // Forward scattering in dusty air: a soft aureole, without painted rays.
-        float solarVisibility = smoothstep(-0.04, 0.12, sunDirection.y);
+        float solarVisibility = smoothstep(-0.025, 0.06, sunDirection.y);
         float aureole = pow(max(sunAlignment, 0.0), 96.0) * 0.13
           + pow(max(sunAlignment, 0.0), 8.0) * 0.025;
         sky += mix(vec3(1.0, 0.48, 0.19), vec3(1.0, 0.94, 0.79),
@@ -725,7 +733,7 @@ function updateSunAndKeyLight() {
   const daylight = THREE.MathUtils.smoothstep(sunDirection.y, -0.18, 0.4);
   const upperSkyDaylight = THREE.MathUtils.smoothstep(sunDirection.y, -0.04, 0.45);
 
-  const sunset = (1 - THREE.MathUtils.smoothstep(Math.abs(sunDirection.y), 0, 0.4)) * THREE.MathUtils.smoothstep(sunDirection.y, -0.2, 0.02);
+  const sunset = (1 - THREE.MathUtils.smoothstep(Math.abs(sunDirection.y + 0.025), 0, 0.3)) * THREE.MathUtils.smoothstep(sunDirection.y, -0.2, 0.02);
   const colors = daylightColors;
   const sky = skyDome.material.uniforms;
   sky.nightStrength.value = 1 - THREE.MathUtils.smoothstep(sunDirection.y, -0.25, 0.02);
@@ -751,7 +759,7 @@ function updateSunAndKeyLight() {
   for (const material of cloudMaterials) {
     material.opacity = 0.64 * (1 - stormCover);
     material.color.copy(colors.nightCloud).lerp(colors.dayCloud, daylight)
-      .lerp(colors.twilightCloud, sunset * 0.45);
+      .lerp(colors.twilightCloud, sunset * 0.65);
   }
   crystalMaterial.emissiveIntensity = THREE.MathUtils.lerp(5.5, 0.4, daylight);
   blueCrystalMaterial.emissiveIntensity = THREE.MathUtils.lerp(3.5, 0.35, daylight);
@@ -1105,6 +1113,9 @@ function completeSpacecraftExit() {
 const abandonedBuilding = createAbandonedBuilding(scene);
 const watchtower = createWatchtower(scene,terrainHeight);
 const spaceTreasure = createSpaceTreasure(scene,terrainHeight);
+const updateBuildingVisibility = createBuildingVisibility([
+  planetaryBase.group, abandonedBuilding.group, watchtower.group,
+]);
 const wormBuildingBounds = [planetaryBase.group, abandonedBuilding.group, watchtower.group].map(building => new THREE.Box3().setFromObject(building));
 const sandworm = createSandworm(terrainHeight, () => { if (curseMessage.showOnce(curseWarningText)) audio.play('message'); }, wormBuildingBounds);
 world.add(sandworm.object);
@@ -1116,8 +1127,8 @@ const ochre = new THREE.Color(0x8f7651);
 const washDark = new THREE.Color(0x6c3f30);
 const paleDust = new THREE.Color(0xc08a5d);
 const paleClay = new THREE.Color(0xb99c7a);
-const terrainTileSize = 160;
-const terrainTileSegments = 96;
+const terrainTileSize = TERRAIN_TILE_SIZE;
+const terrainTileSegments = 128;
 const terrainTiles = [];
 
 function updateTerrainTileGeometry(tile, centerX, centerZ) {
@@ -2201,8 +2212,9 @@ materials.suitPanel = suitFabric.panel;
 materials.suitShadow = suitFabric.reinforcement;
 
 const helmetShellMaterial = new THREE.MeshPhysicalMaterial({
-  color: 0xe4e5db, roughness: 0.29, metalness: 0.05,
-  clearcoat: 0.5, clearcoatRoughness: 0.26,
+  color: 0xdedfd5, roughness: 0.42, metalness: 0.04,
+  bumpMap: equipment.shell.bumpMap, bumpScale: 0.00012,
+  clearcoat: 0.28, clearcoatRoughness: 0.34,
 });
 const visorCanvas = document.createElement('canvas');
 visorCanvas.width = 512;
@@ -2269,7 +2281,7 @@ ship.rotation.order = 'YXZ';
 ship.scale.setScalar(0.8778);
 ship.rotation.y = state.faceYaw;
 
-const torso = new THREE.Mesh(createClothCapsule(0.36, 0.45, 1), materials.ship);
+const torso = new THREE.Mesh(createClothCapsule(0.36, 0.45, 1, { lower: 0.88, upper: 1.02 }), materials.ship);
 torso.position.set(0, 0.55, 0);
 torso.scale.set(0.94, 0.9, 0.68);
 torso.castShadow = true;
@@ -2406,7 +2418,7 @@ ship.add(lowerNeckSeal);
 
 const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.46, 48, 32), helmetShellMaterial);
 helmet.position.set(0, 1.22, 0.045);
-helmet.scale.set(0.98, 1.0, 0.95);
+helmet.scale.set(0.96, 1.04, 1.0);
 helmet.castShadow = true;
 ship.add(helmet);
 
@@ -2426,19 +2438,19 @@ ship.add(helmetCrownBand);
 
 const visor = new THREE.Mesh(new THREE.SphereGeometry(0.305, 56, 28, 0, Math.PI, 0, Math.PI), visorMaterial);
 visor.position.set(0, 1.24, 0.375);
-visor.scale.set(1.04, 1, 0.82);
+visor.scale.set(1.13, 0.9, 0.82);
 visor.castShadow = false;
 ship.add(visor);
 
 const visorSeal = new THREE.Mesh(new THREE.TorusGeometry(0.322, 0.025, 10, 56), materials.rubber);
 visorSeal.position.set(0, 1.24, 0.378);
-visorSeal.scale.set(1.04, 1, 1);
+visorSeal.scale.set(1.13, 0.9, 1);
 visorSeal.castShadow = true;
 ship.add(visorSeal);
 
 const visorGlow = new THREE.Mesh(new THREE.TorusGeometry(0.282, 0.012, 8, 48), materials.helmetGlass);
 visorGlow.position.set(0, 1.24, 0.405);
-visorGlow.scale.set(1.04, 1, 1);
+visorGlow.scale.set(1.13, 0.9, 1);
 visorGlow.castShadow = false;
 ship.add(visorGlow);
 
@@ -2652,7 +2664,7 @@ for (const side of [-1, 1]) {
   shoulderRing.castShadow = true;
   ship.add(shoulderRing);
 
-  const upperArm = new THREE.Mesh(createClothCapsule(0.105, 0.19, side * 2), materials.ship);
+  const upperArm = new THREE.Mesh(createClothCapsule(0.105, 0.19, side * 2, { lower: 0.92, upper: 1.04 }), materials.ship);
   upperArm.position.set(side * 0.42, 0.655, 0.02);
   upperArm.rotation.z = side * 0.35;
   upperArm.castShadow = true;
@@ -2671,7 +2683,7 @@ for (const side of [-1, 1]) {
   elbowPad.castShadow = true;
   upperArm.add(elbowPad);
 
-  const forearm = new THREE.Mesh(createClothCapsule(0.098, 0.18, side * 7), materials.ship);
+  const forearm = new THREE.Mesh(createClothCapsule(0.098, 0.18, side * 7, { lower: 0.84, upper: 1.02 }), materials.ship);
   forearm.position.set(side * 0.47, 0.33, 0.05);
   forearm.castShadow = true;
   ship.add(forearm);
@@ -2687,23 +2699,49 @@ for (const side of [-1, 1]) {
   wristRing.castShadow = true;
   ship.add(wristRing);
 
-  const glove = new THREE.Mesh(new THREE.SphereGeometry(0.105, 18, 12), materials.rubber);
+  // A flattened palm and individually curled fingers replace the round mitten.
+  const palmGeometry = new THREE.SphereGeometry(0.105, 24, 18);
+  palmGeometry.scale(0.87, 0.91, 0.64);
+  const glove = new THREE.Mesh(palmGeometry, equipment.rubber);
   glove.position.set(side * 0.49, 0.08, 0.14);
-  glove.scale.set(1, 0.95, 1.05);
-  glove.castShadow = true;
+  glove.castShadow = glove.receiveShadow = true;
   ship.add(glove);
-
-  for (const finger of [-0.048, -0.016, 0.016, 0.048]) {
-    const gloveFinger = new THREE.Mesh(new THREE.CapsuleGeometry(0.013, 0.09, 5, 8), materials.rubber);
-    gloveFinger.position.set(finger * side, -0.035, 0.105);
-    gloveFinger.rotation.x = 0.46;
-    gloveFinger.castShadow = true;
-    glove.add(gloveFinger);
+  const fingerLengths = [0.105, 0.12, 0.112, 0.085];
+  const fingerRig = [];
+  for (let finger = 0; finger < 4; finger++) {
+    const x = (finger - 1.5) * 0.036 * side;
+    const length = fingerLengths[finger];
+    const joints = [new THREE.Vector3(x, -0.045, 0.018),
+      new THREE.Vector3(x, -0.045 - length * 0.48, 0.028),
+      new THREE.Vector3(x, -0.045 - length * 0.82, 0.052),
+      new THREE.Vector3(x, -0.045 - length * 0.94, 0.075)];
+    const pivots = [];
+    let parent = glove;
+    for (let segment = 0; segment < 3; segment++) {
+      const start = joints[segment], end = joints[segment + 1];
+      const pivot = new THREE.Group();
+      pivot.position.copy(start);
+      if (segment > 0) pivot.position.sub(joints[segment - 1]);
+      parent.add(pivot);
+      parent = pivot;
+      pivots.push(pivot);
+      const radius = 0.018 - segment * 0.002;
+      const part = new THREE.Mesh(new THREE.CapsuleGeometry(radius,
+        Math.max(0.001, start.distanceTo(end) - radius), 5, 10), equipment.rubber);
+      part.position.copy(end).sub(start).multiplyScalar(0.5);
+      part.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), end.clone().sub(start).normalize());
+      part.castShadow = part.receiveShadow = true;
+      pivot.add(part);
+    }
+    fingerRig.push(pivots);
+    const knuckle = new THREE.Mesh(new THREE.SphereGeometry(0.022, 12, 8), suitFabric.reinforcement);
+    knuckle.scale.set(1, 0.8, 0.45);
+    knuckle.position.set(x, -0.04, -0.054);
+    glove.add(knuckle);
   }
-
-  const thumb = new THREE.Mesh(new THREE.CapsuleGeometry(0.016, 0.08, 5, 8), materials.rubber);
-  thumb.position.set(side * 0.095, -0.01, 0.02);
-  thumb.rotation.set(0.32, 0, side * -0.72);
+  const thumb = new THREE.Mesh(new THREE.CapsuleGeometry(0.022, 0.065, 6, 12), equipment.rubber);
+  thumb.position.set(side * 0.075, -0.025, 0.045);
+  thumb.rotation.set(-0.5, 0, side * -0.55);
   thumb.castShadow = true;
   glove.add(thumb);
 
@@ -2854,13 +2892,13 @@ for (const side of [-1, 1]) {
   thighRing.castShadow = true;
   ship.add(thighRing);
 
-  const upperLeg = new THREE.Mesh(createClothCapsule(0.13, 0.3, side * 3), materials.ship);
+  const upperLeg = new THREE.Mesh(createClothCapsule(0.13, 0.3, side * 3, { lower: 0.88, upper: 1.08 }), materials.ship);
   upperLeg.position.set(side * 0.18, -0.25, 0.055);
   upperLeg.rotation.z = side * -0.06;
   upperLeg.castShadow = true;
   ship.add(upperLeg);
 
-  const leg = new THREE.Mesh(createClothCapsule(0.11, 0.3, side * 5), materials.ship);
+  const leg = new THREE.Mesh(createClothCapsule(0.11, 0.3, side * 5, { lower: 0.83, upper: 1.06 }), materials.ship);
   leg.position.set(side * 0.19, -0.76, 0.03);
   leg.rotation.z = side * -0.09;
   leg.castShadow = true;
@@ -2910,6 +2948,11 @@ for (const side of [-1, 1]) {
     elbow,
     wristRing,
     glove,
+    fingers: fingerRig,
+    thumb,
+    thumbRestPosition: thumb.position.clone(),
+    thumbRestRotation: thumb.rotation.clone(),
+    handGrip: 0,
     hip,
     thighRing,
     upperLeg,
@@ -2966,8 +3009,8 @@ for (const rig of limbRig) {
   const wristCuff = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.094, 0.06, 24), materials.suitTrim);
   wristCuff.position.set(0, 0.08, 0);
   rig.glove.add(wristCuff);
-  const knucklePad = new THREE.Mesh(new RoundedBoxGeometry(0.16, 0.07, 0.035, 2, 0.012), materials.suitTrim);
-  knucklePad.position.set(0, 0.015, -0.11);
+  const knucklePad = new THREE.Mesh(new RoundedBoxGeometry(0.14, 0.06, 0.02, 2, 0.012), materials.suitTrim);
+  knucklePad.position.set(0, 0.015, -0.064);
   rig.glove.add(knucklePad);
 }
 for (const side of [-1, 1]) {
@@ -3032,6 +3075,12 @@ let astronautMotionTime = 0;
 let astronautFlightBlend = 0;
 const astronautFlightDirection = new THREE.Vector2();
 let astronautPreviousYaw = state.faceYaw;
+const astronautFlightPose = { tuck: 0, trail: 0, armSpread: 0, landing: 0, thrust: 0 };
+const astronautGroundDirection = new THREE.Vector2(1, 0);
+let astronautPreviousForward = 0;
+let astronautAccelerationLean = 0;
+let astronautPreviousFlight = 0;
+let astronautLandingCompression = 0;
 
 const bodyRig = {
   torso: {
@@ -3714,6 +3763,7 @@ function resetGame({ preserveSlot = false } = {}) {
   spacecraft.resetFlight();
   audio.setCockpit(false);
   restartAfterDeath = false;
+  deathRespawn = null;
   if (!preserveSlot) currentRunHasSave = false;
   clearTimeout(sleepTimer);
   sleepTimer = null;
@@ -3792,6 +3842,18 @@ function resetGame({ preserveSlot = false } = {}) {
   state.sprintBlend = 0;
   astronautFlightBlend = 0;
   astronautFlightDirection.set(0, 0);
+  for (const key of Object.keys(astronautFlightPose)) astronautFlightPose[key] = 0;
+  for (const rig of limbRig) {
+    rig.armSwing = 0;
+    rig.armSideSwing = 0;
+    rig.handGrip = 0;
+    poseAstronautHand(rig, 0);
+  }
+  astronautGroundDirection.set(1, 0);
+  astronautPreviousForward = 0;
+  astronautAccelerationLean = 0;
+  astronautPreviousFlight = 0;
+  astronautLandingCompression = 0;
   astronautPreviousYaw = state.faceYaw;
   headRig.rotation.set(0, 0, 0);
   activeKeys.clear();
@@ -3807,6 +3869,7 @@ function resetGame({ preserveSlot = false } = {}) {
 }
 
 function gameOver(reason) {
+  deathRespawn = { x: ship.position.x, z: ship.position.z, yaw: state.faceYaw };
   audio.silence(); audio.play('death');
   state.running = false;
   if (inventory.open) inventory.close();
@@ -4265,10 +4328,27 @@ function resetSceneryAroundPlayer() {
 
 function updateRunAnimation(delta, movementAmount, movementDirection, sprintAmount) {
   astronautMotionTime += delta;
-  const flightTarget = THREE.MathUtils.clamp((watchtowerGrounded ? 0 : state.flightHeight * 0.7) + state.jetpackBurn, 0, 1);
+  const airbornePose = watchtowerGrounded ? 0 : THREE.MathUtils.smoothstep(state.flightHeight, 0.015, 0.16);
+  const flightTarget = Math.max(airbornePose, THREE.MathUtils.clamp(state.jetpackBurn, 0, 1));
   astronautFlightBlend = THREE.MathUtils.damp(astronautFlightBlend, flightTarget, 8, delta);
   const flightAmount = astronautFlightBlend;
+  const flightPoseTarget = sampleAstronautFlight(state.flightHeight, state.flightVelocity, state.jetpackBurn);
+  for (const key of Object.keys(astronautFlightPose)) {
+    astronautFlightPose[key] = THREE.MathUtils.damp(astronautFlightPose[key], flightPoseTarget[key], 7, delta);
+  }
+  const flightPose = astronautFlightPose;
   const groundedAmount = 1 - flightAmount;
+  // A landing bends the knees before the torso settles back over the feet.
+  const airborne = watchtowerGrounded ? 0 : state.flightHeight;
+  if (astronautPreviousFlight > 0.025 && airborne <= 0.025) {
+    astronautLandingCompression = Math.min(0.13, 0.035 + astronautFlightBlend * 0.11);
+  }
+  astronautPreviousFlight = airborne;
+  astronautLandingCompression = THREE.MathUtils.damp(astronautLandingCompression, 0, 9, delta);
+  const acceleration = delta > 0 ? (state.depthVelocity - astronautPreviousForward) / delta : 0;
+  astronautPreviousForward = state.depthVelocity;
+  astronautAccelerationLean = THREE.MathUtils.damp(astronautAccelerationLean,
+    THREE.MathUtils.clamp(acceleration * 0.025, -0.07, 0.09), 7, delta);
   const flightControlLength = Math.max(1, Math.hypot(state.depthVelocity, state.steerVelocity));
   astronautFlightDirection.x = THREE.MathUtils.damp(astronautFlightDirection.x,
     state.depthVelocity / flightControlLength, 6, delta);
@@ -4280,14 +4360,14 @@ function updateRunAnimation(delta, movementAmount, movementDirection, sprintAmou
   state.sprintBlend = THREE.MathUtils.damp(state.sprintBlend, sprintAmount, 5, delta);
   sprintAmount = state.sprintBlend;
   const runAmount = state.gaitBlend * groundedAmount;
-  state.runCycle += delta * (4.6 + runAmount * 3.4) * runAmount * (1 + sprintAmount * 0.3);
+  state.runCycle += delta * (4.6 + runAmount * 3.4) * runAmount * (1 + sprintAmount * 0.55);
 
   const phase = state.runCycle;
   const sway = Math.sin(phase) * runAmount;
   const idle = (1 - runAmount) * groundedAmount;
   const breath = Math.sin(astronautMotionTime * 1.65);
   const weightShift = Math.sin(astronautMotionTime * 0.75) * idle;
-  const bob = (1 - Math.cos(phase * 2)) * runAmount * 0.012;
+  const bob = Math.cos(phase * 2 - 0.4) * runAmount * 0.009;
   const lean = sprintAmount * runAmount;
   const lateralMotion = THREE.MathUtils.lerp(1, 0.2, sprintAmount);
   const steering = THREE.MathUtils.clamp(state.steerVelocity, -1, 1);
@@ -4296,8 +4376,8 @@ function updateRunAnimation(delta, movementAmount, movementDirection, sprintAmou
   chestRig.position.copy(chestRestPosition);
   chestRig.position.x += sway * 0.012 * lateralMotion + weightShift * 0.006;
   chestRig.position.y += bob + breath * 0.006 * idle;
-  chestRig.position.z += lean * 0.055 + flightForward * 0.045;
-  chestRig.rotation.set(lean * 0.075 + flightAmount * 0.015 + flightForward * 0.12 + breath * idle * 0.006,
+  chestRig.position.z += lean * 0.08 + flightForward * 0.045;
+  chestRig.rotation.set(lean * 0.16 + astronautAccelerationLean * groundedAmount + flightAmount * 0.015 + flightForward * 0.12 + breath * idle * 0.006,
     -Math.sin(phase + 0.2) * runAmount * 0.11 + flightSideways * 0.055,
     (steering * 0.045 * groundedAmount - sway * 0.06) * lateralMotion
       + weightShift * 0.012 - flightSideways * 0.07);
@@ -4310,7 +4390,7 @@ function updateRunAnimation(delta, movementAmount, movementDirection, sprintAmou
   astronautPreviousYaw = state.faceYaw;
   const lookYaw = state.cameraOrbitYaw - state.faceYaw;
   const headPitch = -state.cameraPitch * 0.52 - chestRig.rotation.x * 0.55
-    + Math.sin(phase * 2 - 0.5) * runAmount * 0.095
+    + Math.sin(phase * 2 - 0.5) * runAmount * 0.018
     + Math.sin(astronautMotionTime * 1.1) * idle * 0.025;
   const headYaw = Math.sin(lookYaw) * 0.65 + turnRate * 0.08 + steering * 0.1 * groundedAmount + flightSideways * 0.15
     - chestRig.rotation.y * 0.4 + Math.sin(phase - 0.35) * runAmount * 0.045
@@ -4331,22 +4411,28 @@ function updateRunAnimation(delta, movementAmount, movementDirection, sprintAmou
   waistSeal.rotation.z += sway * 0.02 * lateralMotion - flightSideways * 0.04;
 
   const inputLength = Math.hypot(state.depthVelocity, state.steerVelocity);
-  const forward = inputLength > 0.01 ? state.depthVelocity / inputLength : movementDirection;
-  const sideways = inputLength > 0.01 ? -state.steerVelocity / inputLength : 0;
-  let pelvisDrop = 0;
+  // Retain the last direction at rest, so braking does not snap both feet forward.
+  if (inputLength > 0.01) {
+    astronautGroundDirection.x = THREE.MathUtils.damp(astronautGroundDirection.x,
+      state.depthVelocity / inputLength, 12, delta);
+    astronautGroundDirection.y = THREE.MathUtils.damp(astronautGroundDirection.y,
+      -state.steerVelocity / inputLength, 12, delta);
+  }
+  const forward = astronautGroundDirection.x;
+  const sideways = astronautGroundDirection.y;
+  let pelvisDrop = -astronautLandingCompression * groundedAmount;
   const poses = limbRig.map(rig => {
     const { base, side } = rig;
     const legPhase = phase + (side < 0 ? 0 : Math.PI);
     const step = sampleAstronautStep(legPhase, runAmount, sprintAmount);
-    const flutter = Math.sin(astronautMotionTime * 4 + side) * flightAmount;
     const foot = new THREE.Vector3(base.bootPosition.x + sideways * step.travel
       + side * Math.sin(step.swing * Math.PI) ** 2 * runAmount * 0.018,
       base.bootPosition.y + step.lift,
       base.bootPosition.z + forward * step.travel);
     const flyingFoot = base.bootPosition.clone().add(new THREE.Vector3(
-      side * (0.015 + Math.abs(astronautFlightDirection.y) * 0.045) - astronautFlightDirection.y * 0.1,
-      0.15 + Math.max(0, astronautFlightDirection.x) * 0.1 + side * astronautFlightDirection.y * 0.055 + flutter * 0.015,
-      -0.1 - astronautFlightDirection.x * 0.27 + side * astronautFlightDirection.y * 0.11));
+      side * (0.025 + Math.abs(astronautFlightDirection.y) * 0.035) - astronautFlightDirection.y * 0.065,
+      flightPose.tuck + Math.max(0, astronautFlightDirection.x) * 0.07,
+      -flightPose.trail - astronautFlightDirection.x * 0.22 + side * astronautFlightDirection.y * 0.06));
     foot.lerp(flyingFoot, flightAmount);
     const hip = base.hipPosition.clone();
     hip.y -= 0.035;
@@ -4358,11 +4444,11 @@ function updateRunAnimation(delta, movementAmount, movementDirection, sprintAmou
     const horizontal = (ankle.x - hip.x) ** 2 + (ankle.z - hip.z) ** 2;
     const allowance = ankle.y + Math.sqrt(Math.max(0, reachLimit ** 2 - horizontal)) - hip.y;
     pelvisDrop = smoothMinimum(pelvisDrop, smoothMinimum(0, allowance));
-    return { rig, legPhase, step, hip, ankle, foot, flutter };
+    return { rig, legPhase, step, hip, ankle, foot };
   });
   upperBody.position.set(0, pelvisDrop, 0);
 
-  for (const { rig, legPhase, step, hip, ankle, foot, flutter } of poses) {
+  for (const { rig, legPhase, step, hip, ankle, foot } of poses) {
     const { base, side } = rig;
     hip.y += pelvisDrop;
     const knee = solveLimbJoint(hip, ankle, astronautAnatomy.thigh,
@@ -4380,7 +4466,7 @@ function updateRunAnimation(delta, movementAmount, movementDirection, sprintAmou
     rig.kneePad.quaternion.copy(rig.leg.quaternion);
     rig.ankleRing.position.copy(ankle);
     rig.ankleRing.rotation.copy(base.ankleRingRotation);
-    const footRoll = step.roll * forward * groundedAmount - flightAmount * 0.08 + flightForward * 0.45 + flutter * 0.025;
+    const footRoll = step.roll * forward * groundedAmount - flightAmount * (0.10 + flightPose.thrust * 0.10) + flightForward * 0.25;
     rig.ankleRing.rotation.x += footRoll * 0.7;
     for (const [mesh, rest] of [[rig.boot, base.bootPosition], [rig.bootSole, base.bootSolePosition]]) {
       mesh.position.copy(foot).add(rest.clone().sub(base.bootPosition));
@@ -4388,19 +4474,25 @@ function updateRunAnimation(delta, movementAmount, movementDirection, sprintAmou
         + side * Math.abs(flightSideways) * 0.05);
     }
 
+    rig.handGrip = THREE.MathUtils.damp(rig.handGrip, sprintAmount * runAmount, 10, delta);
+    poseAstronautHand(rig, rig.handGrip);
     const aiming = state.laserActive && handLaser?.parent === rig.glove;
     const swingAmount = runAmount * (aiming ? 0.25 : 1);
-    const armSwing = -Math.sin(legPhase + 0.28) * (0.24 + sprintAmount * 0.105)
-      * swingAmount * movementDirection;
+    // Arms lag behind the foot's sharper push-off and return, keeping a
+    // smaller counter-swing even at sprint cadence.
+    const armTarget = -step.travel * forward * (aiming ? 0.25 : 1) * (0.65 + sprintAmount * 0.10);
+    rig.armSwing = THREE.MathUtils.damp(rig.armSwing ?? 0, armTarget, 9, delta);
+    rig.armSideSwing = THREE.MathUtils.damp(rig.armSideSwing ?? 0, -step.travel * sideways * 0.20, 9, delta);
+    const armSwing = rig.armSwing;
     const shoulder = base.shoulderPosition.clone();
-    shoulder.y += Math.sin(legPhase + 0.4) * runAmount * 0.012 * lateralMotion + side * flightSideways * 0.025;
+    shoulder.y += Math.sin(legPhase + 0.4) * runAmount * 0.007 * lateralMotion + side * flightSideways * 0.025;
     const hand = base.glovePosition.clone();
-    hand.x += side * (0.01 + Math.cos(legPhase + 0.4) * swingAmount * 0.014
-      + flightAmount * 0.025 - Math.max(0, flightForward) * 0.045 + Math.abs(flightSideways) * 0.06)
-      - flightSideways * 0.04;
-    hand.y += 0.045 + Math.max(0, armSwing) * 0.22 + lean * 0.065
+    hand.x += side * (0.01 + Math.cos(legPhase + 0.4) * swingAmount * 0.008
+      + flightAmount * flightPose.armSpread - Math.max(0, flightForward) * 0.045 + Math.abs(flightSideways) * 0.06)
+      - flightSideways * 0.04 + rig.armSideSwing;
+    hand.y += 0.045 + Math.max(0, armSwing) * 0.16 + lean * 0.22
       + flightAmount * 0.09 + Math.max(0, flightForward) * 0.08 + side * flightSideways * 0.1;
-    hand.z += 0.025 + armSwing - flightAmount * 0.06 - flightForward * 0.16 + side * flightSideways * 0.1;
+    hand.z += 0.025 + lean * 0.10 + armSwing - flightAmount * 0.06 - flightForward * 0.16 + side * flightSideways * 0.1;
     // Transform both arm targets with the chest, then solve their joints once.
     for (const [target, rest] of [[rig.shoulder.position, shoulder], [rig.glove.position, hand]]) {
       target.copy(rest).sub(chestRestPosition).applyQuaternion(chestRig.quaternion)
@@ -4417,18 +4509,18 @@ function updateRunAnimation(delta, movementAmount, movementDirection, sprintAmou
 }
 
 function applyAstronautLean(weightSettle, gaitSway) {
-  // Sprinting keeps the whole body level; the gait still turns the shoulders
-  // and swings the arms, without adding another sideways lean at the feet.
+  // Keep the sprint lean forward and bank only gently into steering.
   const sprint = state.sprintBlend;
   const rollLimit = THREE.MathUtils.lerp(0.16, 0.04, sprint);
   const groundRoll = THREE.MathUtils.clamp(
     -state.steerVelocity * THREE.MathUtils.lerp(0.09, 0.025, sprint)
       - gaitSway * 0.4 * (1 - sprint), -rollLimit, rollLimit);
-  const groundPitch = Math.sin(state.elapsed * 3.2) * 0.018 * (1 - sprint * 0.6)
+  const groundPitch = astronautAccelerationLean * 0.45
     + THREE.MathUtils.clamp(state.depthVelocity * (0.075 + sprint * 0.035), -0.09, 0.16)
       - weightSettle * 0.8 * (1 - sprint * 0.5);
   ship.rotation.z = THREE.MathUtils.lerp(groundRoll, -astronautFlightDirection.y * 0.28, astronautFlightBlend);
-  ship.rotation.x = THREE.MathUtils.lerp(groundPitch, astronautFlightDirection.x * 0.32, astronautFlightBlend);
+  ship.rotation.x = THREE.MathUtils.lerp(groundPitch, (astronautFlightDirection.x * 0.24 - astronautFlightPose.thrust * 0.045
+    + astronautFlightPose.landing * 0.08), astronautFlightBlend);
 }
 
 function dampAngle(current, target, lambda, delta) {
@@ -4577,7 +4669,10 @@ function updateGame(delta) {
     }
   }
   const groundedMovement = state.flightHeight <= 0.02 || watchtowerGrounded ? movementAmount : 0;
-  const stepBob = Math.max(0, Math.sin(state.runCycle * 2 + 0.35)) * groundedMovement * 0.055;
+  const leftStep = sampleAstronautStep(state.runCycle, groundedMovement, state.sprintBlend);
+  const rightStep = sampleAstronautStep(state.runCycle + Math.PI, groundedMovement, state.sprintBlend);
+  const runningFloat = Math.min(leftStep.lift, rightStep.lift) * state.sprintBlend * 0.35;
+  const stepBob = (1 - Math.cos(state.runCycle * 2)) * groundedMovement * 0.012 + runningFloat;
   const weightSettle = Math.max(0, -Math.cos(state.runCycle * 2)) * groundedMovement * 0.026;
   const gaitSway = Math.sin(state.runCycle) * groundedMovement * 0.04;
   ship.position.y = terrainHeight(ship.position.x, ship.position.z) + playerGroundOffset + state.flightHeight + stepBob - weightSettle;
@@ -4633,6 +4728,7 @@ function updateGame(delta) {
 }
 
 function updateCameraDrawDistance() {
+  updateBuildingVisibility(camera.position);
   const far=cameraDrawDistance(camera.position.y-terrainHeight(camera.position.x,camera.position.z));
   if (camera.far!==far) { camera.far=far; camera.updateProjectionMatrix(); }
 }
@@ -5038,20 +5134,39 @@ loadButton.addEventListener('click', () => {
   loadGame();
 });
 refreshLoadButton();
+// Keep the death location in memory; restarting must not move or overwrite a save.
+function restoreDeathPosition(respawn) {
+  if (!respawn) return;
+  ship.position.set(respawn.x, terrainHeight(respawn.x, respawn.z) + playerGroundOffset, respawn.z);
+  state.flightHeight = state.flightVelocity = state.fallDistance = 0;
+  state.jetpackBurn = 0;
+  state.faceYaw = state.cameraOrbitYaw = respawn.yaw;
+  astronautPreviousYaw = respawn.yaw;
+  ship.rotation.set(0, respawn.yaw, 0);
+  state.hurtCooldown = 2;
+  updateTerrainAroundPlayer();
+  resetSceneryAroundPlayer();
+  resetFootEffects();
+  updateHud();
+}
+
 function startOrRestartRun() {
   captureGameMouse();
   if (restartAfterDeath) {
+    const respawn = deathRespawn;
     if (currentRunHasSave) {
       try {
         if (readSaves(localStorage)[activeSaveSlot]) {
           loadSlot.value = String(activeSaveSlot);
           loadGame();
+          restoreDeathPosition(respawn);
           return;
         }
       } catch { /* Keep the current slot if the checkpoint cannot be read. */ }
     }
     currentRunHasSave = false;
     resetGame({ preserveSlot: true });
+    restoreDeathPosition(respawn);
     return;
   }
   resetGame();

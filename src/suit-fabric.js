@@ -56,7 +56,7 @@ export function createSuitFabric(renderer) {
 
 // Dense longitudinal rings let folds alter the silhouette instead of drawing
 // dark hoops on a smooth capsule. Off-axis creases gather near the joints.
-export function createClothCapsule(radius, length, seed = 0) {
+export function createClothCapsule(radius, length, seed = 0, fit = {}) {
   const half = length / 2 + radius;
   const rows = length === 0 ? 40 : 80;
   const points = [];
@@ -90,7 +90,9 @@ export function createClothCapsule(radius, length, seed = 0) {
     }
     const drape = Math.cos(angle * 5 + v * 5 + seed) * 0.013;
     const offset = envelope * (crease * gathered * 0.09 + drape);
-    positions.setXYZ(i, x * (1 + offset), y, z * (1 + offset));
+    const tailoring = THREE.MathUtils.lerp(fit.lower ?? 1, fit.upper ?? 1,
+      THREE.MathUtils.smoothstep(v, 0.1, 0.9));
+    positions.setXYZ(i, x * (1 + offset) * tailoring, y, z * (1 + offset) * tailoring);
     // UVs in metres keep the weave consistent between torso and limbs.
     uv.setXY(i, uv.getX(i) * Math.PI * 2 * radius, y + half);
     const dirt = (1 - v) ** 3 * 0.12

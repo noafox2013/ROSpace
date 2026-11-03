@@ -11,10 +11,11 @@ export const astronautAnatomy = Object.freeze({
 
 export function sampleAstronautStep(phase, amount, sprint = 0) {
   const cycle = ((phase / (Math.PI * 2)) % 1 + 1) % 1;
-  const stance = 0.6;
+  sprint = THREE.MathUtils.clamp(sprint, 0, 1);
+  const stance = THREE.MathUtils.lerp(0.6, 0.38, sprint);
   const swinging = cycle > stance;
   const swing = swinging ? (cycle - stance) / (1 - stance) : 0;
-  const reach = (0.25 + sprint * 0.1) * amount;
+  const reach = (0.25 + sprint * 0.15) * amount;
   // Match the backward velocity of the planted foot at both ends of its
   // return arc. The small push-off and follow-through avoid a sharp reversal.
   const tangent = -(1 - stance) / stance;
@@ -22,12 +23,26 @@ export function sampleAstronautStep(phase, amount, sprint = 0) {
     + (2 * tangent - 2) * swing ** 3;
   const travel = swinging ? THREE.MathUtils.lerp(-reach, reach, returnArc)
     : THREE.MathUtils.lerp(reach, -reach, cycle / stance);
-  const lift = Math.sin(swing * Math.PI) ** 2 * (0.16 + sprint * 0.07) * amount;
+  const lift = Math.sin(swing * Math.PI) ** 2 * (0.16 + sprint * 0.23) * amount;
   const roll = (swinging ? THREE.MathUtils.lerp(-0.23, 0.13, THREE.MathUtils.smoothstep(swing, 0, 1))
       - Math.sin(swing * Math.PI) ** 2 * 0.14
-    : 0.13 * (1 - THREE.MathUtils.smoothstep(cycle, 0, 0.16))
-      - 0.23 * THREE.MathUtils.smoothstep(cycle, 0.4, stance)) * amount;
-  return { travel, lift, roll, swinging, swing };
+    : 0.13 * (1 - THREE.MathUtils.smoothstep(cycle / stance, 0, 0.27))
+      - 0.23 * THREE.MathUtils.smoothstep(cycle / stance, 0.67, 1)) * amount;
+  return { travel, lift, roll, swinging, swing, stance };
+}
+
+// Pose targets depend on thrust and vertical speed, never on a repeating kick.
+export function sampleAstronautFlight(height, velocity, burn) {
+  const thrust = THREE.MathUtils.clamp(burn, 0, 1);
+  const falling = THREE.MathUtils.smoothstep(-velocity, 0.3, 5);
+  const landing = falling * (1 - THREE.MathUtils.smoothstep(height, 0.15, 1.6));
+  return {
+    tuck: (0.13 + thrust * 0.10 + falling * 0.13) * (1 - landing * 0.85),
+    trail: (0.10 + thrust * 0.10) * (1 - landing),
+    armSpread: 0.035 + falling * 0.065 + thrust * 0.025,
+    landing,
+    thrust,
+  };
 }
 
 export function smoothMinimum(a, b, softness = 0.012) {
@@ -77,4 +92,21 @@ export function poseAstronautArms(rig, { swing = 0, amount = 0, flight = 0,
   rig.elbow.quaternion.copy(rig.forearm.quaternion);
   rig.wristRing.position.copy(wrist);
   rig.wristRing.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), elbow.clone().sub(wrist).normalize());
+}
+
+// Joint pivots keep all finger segments connected throughout the grip.
+export function poseAstronautHand(rig, grip) {
+  const closed = THREE.MathUtils.smoothstep(grip, 0, 1);
+  for (const finger of rig.fingers) {
+    finger[0].rotation.x = -closed * 0.70;
+    finger[1].rotation.x = -closed * 1.05;
+    finger[2].rotation.x = -closed * 0.75;
+  }
+  rig.thumb.position.copy(rig.thumbRestPosition);
+  rig.thumb.position.x -= rig.side * closed * 0.035;
+  rig.thumb.position.y -= closed * 0.025;
+  rig.thumb.position.z += closed * 0.025;
+  rig.thumb.rotation.copy(rig.thumbRestRotation);
+  rig.thumb.rotation.y -= rig.side * closed * 0.65;
+  rig.thumb.rotation.z += rig.side * closed * 0.55;
 }
